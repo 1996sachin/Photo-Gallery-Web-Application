@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
-import { Images, BookImage, Heart, Users, LogOut, Upload, Search, X, Camera } from 'lucide-react'
-import { useAuthStore } from '../hooks/useAuth'
+import { useEffect, useState } from 'react'
+import { Images, BookImage, Heart, Users, LogOut, Upload, Search, X, Camera, Activity } from 'lucide-react'
+import { api, useAuthStore } from '../hooks/useAuth'
 import UploadModal from './UploadModal'
 
 export default function Layout() {
@@ -19,7 +19,16 @@ export default function Layout() {
     { to: '/albums',   icon: BookImage,  label: 'Albums' },
     { to: '/favorites',icon: Heart,      label: 'Favorites' },
     { to: '/people',   icon: Users,      label: 'People' },
+    { to: '/users',    icon: Activity,   label: 'Users' },
   ]
+
+  useEffect(() => {
+    api.post('/api/auth/me/activity').catch(() => {})
+    const id = window.setInterval(() => {
+      api.post('/api/auth/me/activity').catch(() => {})
+    }, 60000)
+    return () => window.clearInterval(id)
+  }, [])
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
@@ -107,7 +116,12 @@ export default function Layout() {
             </div>
           </div>
           <button
-            onClick={e => { e.stopPropagation(); logout(); navigate('/login') }}
+            onClick={e => {
+              e.stopPropagation()
+              api.post('/api/auth/logout').catch(() => {})
+              logout()
+              navigate('/login')
+            }}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(245,230,200,0.35)', padding: 4, borderRadius: 6, transition: 'color 0.15s', flexShrink: 0 }}
             onMouseEnter={e => e.currentTarget.style.color = 'rgba(245,230,200,0.8)'}
             onMouseLeave={e => e.currentTarget.style.color = 'rgba(245,230,200,0.35)'}

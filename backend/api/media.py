@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query, BackgroundTasks, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, or_
 import aiofiles
 
-from models.database import get_db, Media, User, Album
+from models.database import get_db, Media, User, Album, Person
 from api.auth import get_verified_user as get_current_user
 from services.media_processor import process_photo, process_video
 
@@ -34,6 +34,13 @@ def to_dict(m: Media, base="http://localhost:8000"):
         "created_at": m.created_at.isoformat(),
         "album_id": str(m.album_id) if m.album_id else None,
     }
+
+
+def shared_owner_ids_for(email: str, access_level: Optional[str] = None):
+    q = select(Person.owner_id).where(Person.email == email)
+    if access_level:
+        q = q.where(Person.access_level == access_level)
+    return q
 
 
 @router.post("/upload")
@@ -96,7 +103,7 @@ async def list_media(
     db: AsyncSession = Depends(get_db),
     cu: User = Depends(get_current_user),
 ):
-    q = select(Media).where(Media.uploader_id == cu.id)
+    q = select(Media).where(or_(Media.uploader_id == cu.id, Media.uploader_id.in_(shared_owner_ids_for(cu.email))))
     if album_id:      q = q.where(Media.album_id == uuid.UUID(album_id))
     if media_type in ("photo","video"): q = q.where(Media.media_type == media_type)
     if favorites_only: q = q.where(Media.is_favorite == True)
@@ -111,7 +118,12 @@ async def list_media(
 
 @router.get("/{mid}")
 async def get_one(mid: str, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
-    r = await db.execute(select(Media).where(Media.id == uuid.UUID(mid)))
+    r = await db.execute(
+        select(Media).where(
+            Media.id == uuid.UUID(mid),
+            or_(Media.uploader_id == cu.id, Media.uploader_id.in_(shared_owner_ids_for(cu.email))),
+        )
+    )
     m = r.scalar_one_or_none()
     if not m: raise HTTPException(404, "Not found")
     await db.execute(update(Media).where(Media.id == m.id).values(view_count=Media.view_count + 1))
@@ -141,7 +153,13 @@ async def update_media(mid: str, payload: dict, db: AsyncSession = Depends(get_d
             updates["album_id"] = album_uuid
         else:
             updates["album_id"] = None
-    await db.execute(update(Media).where(Media.id == uuid.UUID(mid), Media.uploader_id == cu.id).values(**updates))
+    allowed_uploader = or_(
+        Media.uploader_id == cu.id,
+        Media.uploader_id.in_(shared_owner_ids_for(cu.email, "edit")),
+    )
+    result = await db.execute(update(Media).where(Media.id == uuid.UUID(mid), allowed_uploader).values(**updates))
+    if result.rowcount == 0:
+        raise HTTPException(404, "Media not found or edit access is not allowed")
     return {"status": "updated"}
 
 

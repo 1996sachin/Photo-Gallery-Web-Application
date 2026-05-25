@@ -4,6 +4,29 @@ import { api, useAuthStore } from '../hooks/useAuth'
 import { Camera, Heart, KeyRound, MailCheck } from 'lucide-react'
 import toast from 'react-hot-toast'
 
+const getPasswordStrength = password => {
+  const suggestions = []
+  if (password.length < 8) suggestions.push('Use at least 8 characters')
+  if (['password', 'password123', '123456', '12345678', 'qwerty'].includes(password.toLowerCase())) suggestions.push('Avoid common passwords')
+  if (!/[a-z]/.test(password)) suggestions.push('Add a lowercase letter')
+  if (!/[A-Z]/.test(password)) suggestions.push('Add an uppercase letter')
+  if (!/\d/.test(password)) suggestions.push('Add a number')
+  if (!/[^A-Za-z0-9]/.test(password)) suggestions.push('Add a symbol')
+  const strength = password.length >= 12 && suggestions.length <= 1
+    ? 'strong'
+    : password.length >= 8 && suggestions.length <= 2
+      ? 'medium'
+      : 'weak'
+  return { strength, suggestions }
+}
+
+const errorMessage = err => {
+  const detail = err.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail?.message) return detail.message
+  return 'Something went wrong'
+}
+
 export default function LoginPage() {
   const navigate = useNavigate()
   const { login, register } = useAuthStore()
@@ -14,6 +37,7 @@ export default function LoginPage() {
   const [reset, setReset] = useState({ email: '', code: '', password: '' })
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
   const setResetField = k => e => setReset(f => ({ ...f, [k]: e.target.value }))
+  const passwordStrength = getPasswordStrength(form.password)
 
   const switchMode = next => {
     setMode(next)
@@ -33,11 +57,16 @@ export default function LoginPage() {
         navigate(user.email_verified ? '/' : '/verify-otp')
       } else {
         if (!form.name.trim()) { toast.error('Please enter your name'); setLoading(false); return }
+        if (passwordStrength.strength === 'weak') {
+          toast.error('Password is weak. Use the suggestions below.')
+          setLoading(false)
+          return
+        }
         const user = await register(form.email, form.password, form.name)
         navigate(user.email_verified ? '/' : '/verify-otp')
       }
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Something went wrong')
+      toast.error(errorMessage(err))
     } finally { setLoading(false) }
   }
 
@@ -62,7 +91,7 @@ export default function LoginPage() {
       setForm(f => ({ ...f, email: reset.email, password: '' }))
       switchMode('login')
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Could not reset password')
+      toast.error(errorMessage(err) || 'Could not reset password')
     } finally { setLoading(false) }
   }
 
@@ -159,6 +188,31 @@ export default function LoginPage() {
                   <input className="input" type="password" placeholder="Minimum 6 characters" value={form.password} onChange={set('password')} required minLength={6} />
                 </div>
 
+                {mode === 'register' && form.password && (
+                  <div style={{
+                    border: '1px solid var(--c-border)',
+                    borderRadius: 10,
+                    padding: '10px 12px',
+                    background: passwordStrength.strength === 'weak' ? 'rgba(201,64,64,.08)' : 'var(--c-surface2)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--c-brown)' }}>Password strength</span>
+                      <span className="badge" style={{
+                        color: passwordStrength.strength === 'weak' ? '#a83030' : passwordStrength.strength === 'medium' ? 'var(--c-gold-dk)' : '#4f8354',
+                      }}>
+                        {passwordStrength.strength === 'weak' ? 'Weak password' : passwordStrength.strength}
+                      </span>
+                    </div>
+                    {passwordStrength.suggestions.length > 0 && (
+                      <div style={{ display: 'grid', gap: 4, marginTop: 8 }}>
+                        {passwordStrength.suggestions.map(item => (
+                          <div key={item} style={{ fontSize: 12, color: 'var(--c-brown-lt)' }}>• {item}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {mode === 'login' && (
                   <button type="button" onClick={() => switchMode('forgot')} style={{
                     alignSelf: 'flex-end', background: 'none', border: 'none', cursor: 'pointer',
@@ -171,7 +225,7 @@ export default function LoginPage() {
                 <button
                   type="submit" className="btn btn-primary"
                   style={{ width: '100%', justifyContent: 'center', padding: '12px', fontSize: 14.5, marginTop: 4, borderRadius: 10 }}
-                  disabled={loading}
+                  disabled={loading || (mode === 'register' && form.password && passwordStrength.strength === 'weak')}
                 >
                   {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Create account'}
                 </button>

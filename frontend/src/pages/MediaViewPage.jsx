@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Heart, Download, Pencil, Trash2, MessageCircle, Send, MapPin, Calendar, Eye } from 'lucide-react'
+import { ArrowLeft, Heart, Download, Pencil, Trash2, MessageCircle, Send, MapPin, Maximize2, Minimize2 } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import { useAuthStore } from '../hooks/useAuth'
 import { useMediaStore } from '../stores/mediaStore'
@@ -20,8 +20,16 @@ export default function MediaViewPage() {
   const [comments, setComments] = useState([])
   const [commentText, setCommentText] = useState('')
   const [editing, setEditing] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const mediaFrameRef = useRef(null)
 
   useEffect(() => { loadMedia(); loadComments() }, [id])
+
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === mediaFrameRef.current)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
 
   const loadMedia = async () => {
     setLoading(true)
@@ -57,6 +65,18 @@ export default function MediaViewPage() {
     navigate('/')
   }
 
+  const toggleFullscreen = async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen()
+      } else {
+        await mediaFrameRef.current?.requestFullscreen()
+      }
+    } catch {
+      toast.error('Fullscreen is not available in this browser')
+    }
+  }
+
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh' }}>
       <div className="spinner" style={{ width: 36, height: 36 }} />
@@ -81,16 +101,34 @@ export default function MediaViewPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 24, alignItems: 'start' }}>
         {/* ── Media panel ── */}
         <div>
-          <div style={{
+          <div ref={mediaFrameRef} className="media-viewer-frame" style={{
+            position: 'relative',
             borderRadius: 16, overflow: 'hidden',
             background: '#1a120a',
             ...(item.media_type === 'video' ? { aspectRatio: '16/9' } : {}),
           }}>
             {item.media_type === 'video'
-              ? <video src={item.file_url} controls playsInline preload="metadata" style={{ width: '100%', height: '100%', display: 'block', background: '#000' }} />
+              ? <video src={item.file_url} controls playsInline preload="metadata" style={{ width: '100%', height: '100%', display: 'block', background: '#000', objectFit: 'contain' }} />
               : <img src={item.file_url} alt={item.title || item.original_filename}
-                  style={{ width: '100%', maxHeight: '70vh', objectFit: 'contain', display: 'block' }} />
+                  style={{ width: '100%', maxHeight: isFullscreen ? '100vh' : '70vh', height: isFullscreen ? '100vh' : 'auto', objectFit: 'contain', display: 'block' }} />
             }
+            <button
+              type="button"
+              className="btn btn-icon"
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit fullscreen' : 'View fullscreen'}
+              style={{
+                position: 'absolute',
+                top: 12,
+                right: 12,
+                background: 'rgba(44,30,15,.62)',
+                color: '#fff',
+                borderColor: 'rgba(255,255,255,.18)',
+                backdropFilter: 'blur(6px)',
+              }}
+            >
+              {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
           </div>
 
           {/* Actions */}
@@ -101,6 +139,10 @@ export default function MediaViewPage() {
             </button>
             <button className="btn btn-ghost" onClick={() => { const a = document.createElement('a'); a.href = item.file_url; a.download = item.original_filename; a.click() }}>
               <Download size={14} /> Download
+            </button>
+            <button className="btn btn-ghost" onClick={toggleFullscreen}>
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
             </button>
             <button className="btn btn-ghost" onClick={() => setEditing(true)}>
               <Pencil size={14} /> Edit

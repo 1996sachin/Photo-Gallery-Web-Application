@@ -13,10 +13,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from models.database import get_db, User
+from sqlalchemy import desc, select
+from models.database import get_db, User, UserActivityEvent
 import os
 
 router = APIRouter()
@@ -52,6 +52,9 @@ class UserOut(BaseModel):
     bio: Optional[str] = None
     email_verified: bool = False
     email_verification_requested_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    total_online_seconds: int = 0
+    last_activity: Optional[str] = None
     class Config: from_attributes = True
 
 
@@ -79,6 +82,24 @@ class PasswordResetConfirm(BaseModel):
     password: str
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ActivityEventOut(BaseModel):
+    activity: str
+    path: Optional[str] = None
+    created_at: datetime
+    class Config: from_attributes = True
+
+
+class UserActivityOut(UserOut):
+    online: bool = False
+    current_session_started_at: Optional[datetime] = None
+    recent_events: list[ActivityEventOut] = Field(default_factory=list)
+
+
 def make_token(sub: str) -> str:
     return jwt.encode({"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=EXPIRE_MIN)}, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -100,12 +121,57 @@ def _require_gmail(email: str):
         raise HTTPException(400, "Use a Gmail address to create and verify your account")
 
 
+def password_strength(password: str) -> tuple[str, list[str]]:
+    suggestions = []
+    if len(password) < 8:
+        suggestions.append("Use at least 8 characters")
+    if password.lower() in {"password", "password123", "123456", "12345678", "qwerty"}:
+        suggestions.append("Avoid common passwords")
+    if not any(ch.islower() for ch in password):
+        suggestions.append("Add a lowercase letter")
+    if not any(ch.isupper() for ch in password):
+        suggestions.append("Add an uppercase letter")
+    if not any(ch.isdigit() for ch in password):
+        suggestions.append("Add a number")
+    if not any(not ch.isalnum() for ch in password):
+        suggestions.append("Add a symbol")
+    if len(password) >= 12 and len(suggestions) <= 1:
+        return "strong", suggestions
+    if len(suggestions) <= 2 and len(password) >= 8:
+        return "medium", suggestions
+    return "weak", suggestions
+
+
+def require_not_weak_password(password: str, label: str = "Password"):
+    strength, suggestions = password_strength(password)
+    if strength == "weak":
+        raise HTTPException(
+            400,
+            {
+                "message": f"{label} is weak",
+                "strength": strength,
+                "suggestions": suggestions,
+            },
+        )
+
+
 def _hash_otp(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def _make_otp() -> str:
     return f"{secrets.randbelow(1000000):06d}"
+
+
+def _mask_email(email: str) -> str:
+    local, _, domain = email.strip().lower().partition("@")
+    if not local or not domain:
+        return "your Gmail account"
+    if len(local) <= 2:
+        masked_local = local[0] + "*"
+    else:
+        masked_local = local[0] + ("*" * (len(local) - 2)) + local[-1]
+    return f"{masked_local}@{domain}"
 
 
 def _is_expired(expires_at: datetime) -> bool:
@@ -115,18 +181,126 @@ def _is_expired(expires_at: datetime) -> bool:
     return expires_at < now
 
 
+def _is_online(last_seen_at: Optional[datetime]) -> bool:
+    if not last_seen_at:
+        return False
+    now = datetime.utcnow()
+    if last_seen_at.tzinfo is not None:
+        now = now.replace(tzinfo=last_seen_at.tzinfo)
+    return now - last_seen_at <= timedelta(minutes=2)
+
+
+def _request_ip(request: Request) -> Optional[str]:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()[:64]
+    return request.client.host[:64] if request.client else None
+
+
+def record_activity(
+    db: AsyncSession,
+    user: User,
+    activity: str,
+    request: Optional[Request] = None,
+    write_event: bool = True,
+):
+    now = datetime.utcnow()
+    if user.last_seen_at:
+        previous = user.last_seen_at
+        if previous.tzinfo is not None:
+            now_for_delta = now.replace(tzinfo=previous.tzinfo)
+        else:
+            now_for_delta = now
+        gap_seconds = int((now_for_delta - previous).total_seconds())
+        if 0 < gap_seconds <= 120:
+            user.total_online_seconds = (user.total_online_seconds or 0) + gap_seconds
+    user.last_seen_at = now
+    user.last_activity = activity
+    if activity in {"Signed in", "Registered", "Heartbeat"} and not user.current_session_started_at:
+        user.current_session_started_at = now
+    if activity == "Signed out":
+        user.current_session_started_at = None
+    if write_event:
+        db.add(UserActivityEvent(
+            user_id=user.id,
+            activity=activity,
+            path=str(request.url.path) if request else None,
+            user_agent=(request.headers.get("user-agent")[:500] if request and request.headers.get("user-agent") else None),
+            ip_address=_request_ip(request) if request else None,
+        ))
+
+
+def _route_activity_label(request: Request) -> str:
+    path = request.url.path
+    if path.endswith("/upload"):
+        return "Uploaded media"
+    if "/favorite" in path:
+        return "Updated favorite"
+    if "/api/albums" in path:
+        return "Changed albums"
+    if "/api/comments" in path:
+        return "Changed comments"
+    if "/api/people" in path:
+        return "Managed people"
+    if "/api/edits" in path:
+        return "Edited media"
+    if "/api/media" in path:
+        return "Changed media"
+    return f"{request.method} {path}"
+
+
 def send_code_email(to_email: str, code: str, subject: str, purpose: str):
     if not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM:
         raise HTTPException(500, "SMTP is not configured")
 
+    masked_email = _mask_email(to_email)
+    purpose_title = purpose.capitalize()
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = SMTP_FROM
-    msg["To"] = to_email
+    msg["To"] = "Undisclosed recipients:;"
     msg.set_content(
-        f"Enter this code in Memories to {purpose}:\n\n"
+        f"Memories security code\n\n"
         f"{code}\n\n"
-        "This code expires in 10 minutes."
+        f"Use this code to {purpose} for {masked_email}.\n"
+        "This code expires in 10 minutes. Do not share it with anyone."
+    )
+    msg.add_alternative(
+        f"""\
+<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f5f6f7;font-family:Arial,Helvetica,sans-serif;color:#1c1e21;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f6f7;padding:24px 0;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:520px;background:#ffffff;border:1px solid #dddfe2;border-radius:8px;">
+            <tr>
+              <td style="padding:20px 24px;border-bottom:1px solid #e4e6eb;font-size:20px;font-weight:700;color:#1877f2;">
+                Memories
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px;">
+                <div style="font-size:18px;font-weight:600;margin-bottom:12px;">{purpose_title}</div>
+                <div style="font-size:15px;line-height:22px;margin-bottom:18px;">
+                  Use this security code for <strong>{masked_email}</strong>.
+                </div>
+                <div style="font-size:32px;letter-spacing:8px;font-weight:700;padding:16px 18px;background:#f0f2f5;border-radius:6px;text-align:center;color:#050505;">
+                  {code}
+                </div>
+                <div style="font-size:13px;line-height:20px;color:#65676b;margin-top:18px;">
+                  This code expires in 10 minutes. Do not share this code with anyone.
+                </div>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+""",
+        subtype="html",
     )
 
     context = ssl.create_default_context()
@@ -134,14 +308,14 @@ def send_code_email(to_email: str, code: str, subject: str, purpose: str):
         if SMTP_TLS:
             server.starttls(context=context)
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
+        server.send_message(msg, to_addrs=[to_email])
 
 
 def send_verification_email(to_email: str, code: str):
     send_code_email(
         to_email,
         code,
-        "Your Memories verification code",
+        "Memories security code",
         "verify your Gmail account",
     )
 
@@ -150,7 +324,7 @@ def send_password_reset_email(to_email: str, code: str):
     send_code_email(
         to_email,
         code,
-        "Your Memories password reset code",
+        "Memories security code",
         "reset your password",
     )
 
@@ -171,7 +345,7 @@ def issue_password_reset_otp(u: User):
     send_password_reset_email(u.email, code)
 
 
-async def get_current_user(token: str = Depends(oauth2), db: AsyncSession = Depends(get_db)) -> User:
+async def get_current_user(request: Request, token: str = Depends(oauth2), db: AsyncSession = Depends(get_db)) -> User:
     exc = HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not validate credentials", headers={"WWW-Authenticate": "Bearer"})
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -181,6 +355,15 @@ async def get_current_user(token: str = Depends(oauth2), db: AsyncSession = Depe
     r = await db.execute(select(User).where(User.id == uuid.UUID(uid)))
     u = r.scalar_one_or_none()
     if not u: raise exc
+    is_auth_path = request.url.path.startswith("/api/auth")
+    should_log_action = request.method != "GET" and not is_auth_path
+    record_activity(
+        db,
+        u,
+        _route_activity_label(request) if should_log_action else "Active",
+        request,
+        write_event=should_log_action,
+    )
     return u
 
 
@@ -199,13 +382,17 @@ def _out(u: User) -> UserOut:
         bio=u.bio,
         email_verified=bool(u.email_verified),
         email_verification_requested_at=u.email_verification_requested_at,
+        last_seen_at=u.last_seen_at,
+        total_online_seconds=u.total_online_seconds or 0,
+        last_activity=u.last_activity,
     )
 
 
 @router.post("/register", response_model=Token)
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
+async def register(payload: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
     email = _normalize_email(payload.email)
     _require_gmail(email)
+    require_not_weak_password(payload.password)
     r = await db.execute(select(User).where(User.email == email))
     existing = r.scalar_one_or_none()
     if existing:
@@ -213,19 +400,22 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
             raise HTTPException(400, "Email already registered. Sign in to continue.")
         if not existing.email_verified:
             issue_email_otp(existing)
+        record_activity(db, existing, "Signed in", request)
         return Token(access_token=make_token(str(existing.id)), token_type="bearer", user=_out(existing))
     u = User(email=email, password_hash=pwd.hash(payload.password), display_name=payload.display_name)
     db.add(u); await db.flush()
     issue_email_otp(u)
+    record_activity(db, u, "Registered", request)
     return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
 
 
 @router.post("/token", response_model=Token)
-async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+async def login(request: Request, form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
     r = await db.execute(select(User).where(User.email == _normalize_email(form.username)))
     u = r.scalar_one_or_none()
     if not u or not pwd.verify(form.password, u.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+    record_activity(db, u, "Signed in", request)
     return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
 
 
@@ -248,6 +438,7 @@ async def reset_password(payload: PasswordResetConfirm, db: AsyncSession = Depen
         raise HTTPException(400, "Enter the 6 digit reset code")
     if len(payload.password) < 6:
         raise HTTPException(400, "Password must be at least 6 characters")
+    require_not_weak_password(payload.password)
 
     r = await db.execute(select(User).where(User.email == email))
     u = r.scalar_one_or_none()
@@ -271,8 +462,41 @@ async def me(cu: User = Depends(get_current_user)):
     return _out(cu)
 
 
+@router.post("/me/activity", response_model=UserOut)
+async def heartbeat(request: Request, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+    record_activity(db, cu, "Heartbeat", request, write_event=False)
+    return _out(cu)
+
+
+@router.post("/logout")
+async def logout(request: Request, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+    record_activity(db, cu, "Signed out", request)
+    return {"status": "signed_out"}
+
+
+@router.get("/users/activity", response_model=list[UserActivityOut])
+async def users_activity(db: AsyncSession = Depends(get_db), cu: User = Depends(get_verified_user)):
+    users_result = await db.execute(select(User).order_by(User.display_name))
+    users = users_result.scalars().all()
+    output = []
+    for user in users:
+        events_result = await db.execute(
+            select(UserActivityEvent)
+            .where(UserActivityEvent.user_id == user.id)
+            .order_by(desc(UserActivityEvent.created_at))
+            .limit(5)
+        )
+        output.append(UserActivityOut(
+            **_out(user).model_dump(),
+            online=_is_online(user.last_seen_at),
+            current_session_started_at=user.current_session_started_at,
+            recent_events=events_result.scalars().all(),
+        ))
+    return output
+
+
 @router.patch("/me", response_model=UserOut)
-async def update_me(payload: UserUpdate, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+async def update_me(payload: UserUpdate, request: Request, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
     if payload.display_name is not None:
         name = payload.display_name.strip()
         if not name:
@@ -295,11 +519,28 @@ async def update_me(payload: UserUpdate, db: AsyncSession = Depends(get_db), cu:
             cu.email_verified = False
             cu.email_verification_requested_at = None
 
+    record_activity(db, cu, "Updated profile", request)
     return _out(cu)
 
 
+@router.patch("/me/password")
+async def change_password(payload: PasswordChange, request: Request, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+    if not pwd.verify(payload.current_password, cu.password_hash):
+        raise HTTPException(400, "Current password is incorrect")
+    if len(payload.new_password) < 6:
+        raise HTTPException(400, "New password must be at least 6 characters")
+    require_not_weak_password(payload.new_password, "New password")
+    if pwd.verify(payload.new_password, cu.password_hash):
+        raise HTTPException(400, "New password must be different from the current password")
+    cu.password_hash = pwd.hash(payload.new_password)
+    cu.password_reset_token = None
+    cu.password_reset_expires_at = None
+    record_activity(db, cu, "Changed password", request)
+    return {"status": "updated", "message": "Password updated"}
+
+
 @router.post("/me/avatar", response_model=UserOut)
-async def upload_avatar(file: UploadFile = File(...), cu: User = Depends(get_current_user)):
+async def upload_avatar(request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
     mime = file.content_type or ""
     if mime not in ALLOWED_AVATAR:
         raise HTTPException(400, f"Unsupported avatar type: {mime}")
@@ -316,15 +557,17 @@ async def upload_avatar(file: UploadFile = File(...), cu: User = Depends(get_cur
                 raise HTTPException(413, "Avatar too large (max 5 MB)")
             f.write(chunk)
     cu.avatar_url = f"http://localhost:8000/uploads/avatars/{name}"
+    record_activity(db, cu, "Updated profile photo", request)
     return _out(cu)
 
 
 @router.post("/me/request-email-verification")
-async def request_email_verification(cu: User = Depends(get_current_user)):
+async def request_email_verification(request: Request, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
     if cu.email_verified:
         return {"status": "verified", "message": "Email is already verified"}
     _require_gmail(cu.email.lower())
     issue_email_otp(cu)
+    record_activity(db, cu, "Requested email verification", request)
     return {
         "status": "requested",
         "message": "Verification code sent to your Gmail account.",
@@ -333,7 +576,7 @@ async def request_email_verification(cu: User = Depends(get_current_user)):
 
 
 @router.post("/me/verify-email-otp", response_model=UserOut)
-async def verify_email_otp(payload: EmailOtpVerify, cu: User = Depends(get_current_user)):
+async def verify_email_otp(payload: EmailOtpVerify, request: Request, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
     code = "".join(ch for ch in payload.code if ch.isdigit())
     if len(code) != 6:
         raise HTTPException(400, "Enter the 6 digit verification code")
@@ -346,6 +589,7 @@ async def verify_email_otp(payload: EmailOtpVerify, cu: User = Depends(get_curre
     cu.email_verified = True
     cu.email_verification_token = None
     cu.email_verification_expires_at = None
+    record_activity(db, cu, "Verified email", request)
     return _out(cu)
 
 

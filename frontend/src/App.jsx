@@ -10,6 +10,7 @@ import PeoplePage from './pages/PeoplePage'
 import MediaViewPage from './pages/MediaViewPage'
 import ProfilePage from './pages/ProfilePage'
 import VerifyOtpPage from './pages/VerifyOtpPage'
+import UsersActivityPage from './pages/UsersActivityPage'
 
 function Guard({ children }) {
   const token = useAuthStore(s => s.token)
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="albums/:id" element={<AlbumsPage />} />
           <Route path="favorites" element={<FavoritesPage />} />
           <Route path="people" element={<PeoplePage />} />
+          <Route path="users" element={<UsersActivityPage />} />
           <Route path="profile" element={<ProfilePage />} />
           <Route path="media/:id" element={<MediaViewPage />} />
         </Route>

@@ -3,6 +3,7 @@ import { useOutletContext } from 'react-router-dom'
 import { Images, Film, LayoutGrid } from 'lucide-react'
 import { useMediaStore } from '../stores/mediaStore'
 import MediaCard from '../components/MediaCard'
+import MemorySlideshow from '../components/MemorySlideshow'
 
 export default function GalleryPage() {
   const { search } = useOutletContext()
@@ -58,6 +59,7 @@ export default function GalleryPage() {
         </div>
       ) : (
         <>
+          {!search && filters.type === 'all' && <MemorySlideshow items={items} />}
           <div className="media-grid">
             {items.map(item => <MediaCard key={item.id} item={item} />)}
           </div>

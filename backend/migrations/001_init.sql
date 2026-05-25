@@ -15,8 +15,25 @@ CREATE TABLE users (
     email_verification_requested_at TIMESTAMPTZ,
     email_verification_token TEXT,
     email_verification_expires_at TIMESTAMPTZ,
+    password_reset_token TEXT,
+    password_reset_requested_at TIMESTAMPTZ,
+    password_reset_expires_at TIMESTAMPTZ,
+    last_seen_at TIMESTAMPTZ,
+    current_session_started_at TIMESTAMPTZ,
+    total_online_seconds INTEGER DEFAULT 0,
+    last_activity TEXT,
     created_at    TIMESTAMPTZ DEFAULT NOW(),
     updated_at    TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE user_activity_events (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    activity TEXT NOT NULL,
+    path TEXT,
+    user_agent TEXT,
+    ip_address VARCHAR(64),
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Albums
@@ -79,6 +96,11 @@ CREATE TABLE people (
     id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     owner_id   UUID REFERENCES users(id) ON DELETE CASCADE,
     name       VARCHAR(100) NOT NULL,
+    email      VARCHAR(255),
+    access_level VARCHAR(10) DEFAULT 'view' CHECK (access_level IN ('view','edit')),
+    invite_token VARCHAR(64) UNIQUE,
+    invite_sent_at TIMESTAMPTZ,
+    accepted_at TIMESTAMPTZ,
     avatar_url TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -140,3 +162,6 @@ CREATE INDEX idx_reactions_media  ON reactions(media_id);
 CREATE INDEX idx_albums_owner     ON albums(owner_id);
 CREATE INDEX idx_albums_token     ON albums(share_token) WHERE share_token IS NOT NULL;
 CREATE INDEX idx_people_owner     ON people(owner_id);
+CREATE UNIQUE INDEX idx_people_owner_email ON people(owner_id, email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX idx_people_invite_token ON people(invite_token) WHERE invite_token IS NOT NULL;
+CREATE INDEX idx_user_activity_user_created ON user_activity_events(user_id, created_at DESC);

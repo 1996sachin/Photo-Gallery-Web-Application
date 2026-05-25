@@ -36,6 +36,17 @@ async def create_tables():
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token TEXT"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_requested_at TIMESTAMPTZ"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS current_session_started_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_online_seconds INTEGER DEFAULT 0"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity TEXT"))
+        await conn.execute(text("ALTER TABLE people ADD COLUMN IF NOT EXISTS email VARCHAR(255)"))
+        await conn.execute(text("ALTER TABLE people ADD COLUMN IF NOT EXISTS access_level VARCHAR(10) DEFAULT 'view'"))
+        await conn.execute(text("ALTER TABLE people ADD COLUMN IF NOT EXISTS invite_token VARCHAR(64)"))
+        await conn.execute(text("ALTER TABLE people ADD COLUMN IF NOT EXISTS invite_sent_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE people ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ"))
+        await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_owner_email ON people(owner_id, email) WHERE email IS NOT NULL"))
+        await conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_people_invite_token ON people(invite_token) WHERE invite_token IS NOT NULL"))
 
 
 class User(Base):
@@ -53,10 +64,26 @@ class User(Base):
     password_reset_token = Column(Text)
     password_reset_requested_at = Column(DateTime(timezone=True))
     password_reset_expires_at = Column(DateTime(timezone=True))
+    last_seen_at = Column(DateTime(timezone=True))
+    current_session_started_at = Column(DateTime(timezone=True))
+    total_online_seconds = Column(Integer, default=0)
+    last_activity = Column(Text)
     created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at    = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     albums        = relationship("Album", back_populates="owner", foreign_keys="Album.owner_id")
     media         = relationship("Media", back_populates="uploader")
+
+
+class UserActivityEvent(Base):
+    __tablename__ = "user_activity_events"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    activity = Column(Text, nullable=False)
+    path = Column(Text)
+    user_agent = Column(Text)
+    ip_address = Column(String(64))
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+    user = relationship("User")
 
 
 class Album(Base):
@@ -137,6 +164,11 @@ class Person(Base):
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id   = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     name       = Column(String(100), nullable=False)
+    email      = Column(String(255))
+    access_level = Column(String(10), default="view")
+    invite_token = Column(String(64), unique=True)
+    invite_sent_at = Column(DateTime(timezone=True))
+    accepted_at = Column(DateTime(timezone=True))
     avatar_url = Column(Text)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
