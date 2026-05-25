@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from models.database import get_db, Person, User
-from api.auth import get_current_user
+from api.auth import get_verified_user as get_current_user
 
 router = APIRouter()
 

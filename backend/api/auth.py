@@ -4,6 +4,7 @@ from typing import Optional
 from pathlib import Path
 from email.message import EmailMessage
 import secrets
+import hashlib
 import smtplib
 import ssl
 import httpx
@@ -25,6 +26,7 @@ EXPIRE_MIN = 60 * 24 * 7
 AVATAR_DIR = Path("uploads/avatars")
 ALLOWED_AVATAR = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 APP_URL = os.getenv("APP_URL", "http://localhost:8000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", APP_URL)
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USERNAME = os.getenv("SMTP_USERNAME")
@@ -63,6 +65,20 @@ class UserUpdate(BaseModel):
     bio: Optional[str] = None
 
 
+class EmailOtpVerify(BaseModel):
+    code: str
+
+
+class PasswordResetRequest(BaseModel):
+    email: str
+
+
+class PasswordResetConfirm(BaseModel):
+    email: str
+    code: str
+    password: str
+
+
 def make_token(sub: str) -> str:
     return jwt.encode({"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=EXPIRE_MIN)}, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -75,19 +91,42 @@ def make_state_token(sub: str) -> str:
     )
 
 
-def send_verification_email(to_email: str, token: str):
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _require_gmail(email: str):
+    if not email.endswith("@gmail.com"):
+        raise HTTPException(400, "Use a Gmail address to create and verify your account")
+
+
+def _hash_otp(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def _make_otp() -> str:
+    return f"{secrets.randbelow(1000000):06d}"
+
+
+def _is_expired(expires_at: datetime) -> bool:
+    now = datetime.utcnow()
+    if expires_at.tzinfo is not None:
+        now = now.replace(tzinfo=expires_at.tzinfo)
+    return expires_at < now
+
+
+def send_code_email(to_email: str, code: str, subject: str, purpose: str):
     if not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM:
         raise HTTPException(500, "SMTP is not configured")
 
-    link = f"{APP_URL}/api/auth/verify-email?token={token}"
     msg = EmailMessage()
-    msg["Subject"] = "Verify your Memories Gmail account"
+    msg["Subject"] = subject
     msg["From"] = SMTP_FROM
     msg["To"] = to_email
     msg.set_content(
-        "Verify your Memories account by opening this link:\n\n"
-        f"{link}\n\n"
-        "This link expires in 24 hours."
+        f"Enter this code in Memories to {purpose}:\n\n"
+        f"{code}\n\n"
+        "This code expires in 10 minutes."
     )
 
     context = ssl.create_default_context()
@@ -96,6 +135,40 @@ def send_verification_email(to_email: str, token: str):
             server.starttls(context=context)
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
         server.send_message(msg)
+
+
+def send_verification_email(to_email: str, code: str):
+    send_code_email(
+        to_email,
+        code,
+        "Your Memories verification code",
+        "verify your Gmail account",
+    )
+
+
+def send_password_reset_email(to_email: str, code: str):
+    send_code_email(
+        to_email,
+        code,
+        "Your Memories password reset code",
+        "reset your password",
+    )
+
+
+def issue_email_otp(u: User):
+    code = _make_otp()
+    u.email_verification_token = _hash_otp(code)
+    u.email_verification_requested_at = datetime.utcnow()
+    u.email_verification_expires_at = datetime.utcnow() + timedelta(minutes=10)
+    send_verification_email(u.email, code)
+
+
+def issue_password_reset_otp(u: User):
+    code = _make_otp()
+    u.password_reset_token = _hash_otp(code)
+    u.password_reset_requested_at = datetime.utcnow()
+    u.password_reset_expires_at = datetime.utcnow() + timedelta(minutes=10)
+    send_password_reset_email(u.email, code)
 
 
 async def get_current_user(token: str = Depends(oauth2), db: AsyncSession = Depends(get_db)) -> User:
@@ -109,6 +182,12 @@ async def get_current_user(token: str = Depends(oauth2), db: AsyncSession = Depe
     u = r.scalar_one_or_none()
     if not u: raise exc
     return u
+
+
+async def get_verified_user(cu: User = Depends(get_current_user)) -> User:
+    if not cu.email_verified:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Verify your Gmail account before using the app")
+    return cu
 
 
 def _out(u: User) -> UserOut:
@@ -125,20 +204,66 @@ def _out(u: User) -> UserOut:
 
 @router.post("/register", response_model=Token)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
-    r = await db.execute(select(User).where(User.email == payload.email))
-    if r.scalar_one_or_none(): raise HTTPException(400, "Email already registered")
-    u = User(email=payload.email, password_hash=pwd.hash(payload.password), display_name=payload.display_name)
+    email = _normalize_email(payload.email)
+    _require_gmail(email)
+    r = await db.execute(select(User).where(User.email == email))
+    existing = r.scalar_one_or_none()
+    if existing:
+        if not pwd.verify(payload.password, existing.password_hash):
+            raise HTTPException(400, "Email already registered. Sign in to continue.")
+        if not existing.email_verified:
+            issue_email_otp(existing)
+        return Token(access_token=make_token(str(existing.id)), token_type="bearer", user=_out(existing))
+    u = User(email=email, password_hash=pwd.hash(payload.password), display_name=payload.display_name)
     db.add(u); await db.flush()
+    issue_email_otp(u)
     return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
 
 
 @router.post("/token", response_model=Token)
 async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
-    r = await db.execute(select(User).where(User.email == form.username))
+    r = await db.execute(select(User).where(User.email == _normalize_email(form.username)))
     u = r.scalar_one_or_none()
     if not u or not pwd.verify(form.password, u.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
     return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
+
+
+@router.post("/forgot-password")
+async def forgot_password(payload: PasswordResetRequest, db: AsyncSession = Depends(get_db)):
+    email = _normalize_email(payload.email)
+    _require_gmail(email)
+    r = await db.execute(select(User).where(User.email == email))
+    u = r.scalar_one_or_none()
+    if u:
+        issue_password_reset_otp(u)
+    return {"status": "requested", "message": "If this Gmail account exists, a reset code has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(payload: PasswordResetConfirm, db: AsyncSession = Depends(get_db)):
+    email = _normalize_email(payload.email)
+    code = "".join(ch for ch in payload.code if ch.isdigit())
+    if len(code) != 6:
+        raise HTTPException(400, "Enter the 6 digit reset code")
+    if len(payload.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+
+    r = await db.execute(select(User).where(User.email == email))
+    u = r.scalar_one_or_none()
+    if (
+        not u
+        or not u.password_reset_token
+        or not u.password_reset_expires_at
+        or _is_expired(u.password_reset_expires_at)
+        or _hash_otp(code) != u.password_reset_token
+    ):
+        raise HTTPException(400, "Reset code is invalid or expired")
+
+    u.password_hash = pwd.hash(payload.password)
+    u.password_reset_token = None
+    u.password_reset_expires_at = None
+    return {"status": "reset", "message": "Password updated. Sign in with your new password."}
 
 
 @router.get("/me", response_model=UserOut)
@@ -158,9 +283,10 @@ async def update_me(payload: UserUpdate, db: AsyncSession = Depends(get_db), cu:
         cu.bio = payload.bio.strip()[:1000] or None
 
     if payload.email is not None:
-        email = payload.email.strip().lower()
+        email = _normalize_email(payload.email)
         if "@" not in email or "." not in email.rsplit("@", 1)[-1]:
             raise HTTPException(400, "Valid email is required")
+        _require_gmail(email)
         if email != cu.email:
             r = await db.execute(select(User).where(User.email == email, User.id != cu.id))
             if r.scalar_one_or_none():
@@ -197,25 +323,37 @@ async def upload_avatar(file: UploadFile = File(...), cu: User = Depends(get_cur
 async def request_email_verification(cu: User = Depends(get_current_user)):
     if cu.email_verified:
         return {"status": "verified", "message": "Email is already verified"}
-    if not cu.email.lower().endswith("@gmail.com"):
-        raise HTTPException(400, "Use a Gmail address before requesting Gmail verification")
-    token = secrets.token_urlsafe(32)
-    cu.email_verification_token = token
-    cu.email_verification_requested_at = datetime.utcnow()
-    cu.email_verification_expires_at = datetime.utcnow() + timedelta(hours=24)
-    send_verification_email(cu.email, token)
+    _require_gmail(cu.email.lower())
+    issue_email_otp(cu)
     return {
         "status": "requested",
-        "message": "Verification email sent to your Gmail account.",
+        "message": "Verification code sent to your Gmail account.",
         "requested_at": cu.email_verification_requested_at.isoformat(),
     }
+
+
+@router.post("/me/verify-email-otp", response_model=UserOut)
+async def verify_email_otp(payload: EmailOtpVerify, cu: User = Depends(get_current_user)):
+    code = "".join(ch for ch in payload.code if ch.isdigit())
+    if len(code) != 6:
+        raise HTTPException(400, "Enter the 6 digit verification code")
+    if not cu.email_verification_token or not cu.email_verification_expires_at:
+        raise HTTPException(400, "Request a new verification code")
+    if _is_expired(cu.email_verification_expires_at):
+        raise HTTPException(400, "Verification code expired")
+    if _hash_otp(code) != cu.email_verification_token:
+        raise HTTPException(400, "Invalid verification code")
+    cu.email_verified = True
+    cu.email_verification_token = None
+    cu.email_verification_expires_at = None
+    return _out(cu)
 
 
 @router.get("/verify-email", response_class=HTMLResponse)
 async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     r = await db.execute(select(User).where(User.email_verification_token == token))
     u = r.scalar_one_or_none()
-    if not u or not u.email_verification_expires_at or u.email_verification_expires_at < datetime.utcnow():
+    if not u or not u.email_verification_expires_at or _is_expired(u.email_verification_expires_at):
         raise HTTPException(400, "Verification link is invalid or expired")
     u.email_verified = True
     u.email_verification_token = None
@@ -224,7 +362,7 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     return HTMLResponse(
         "<html><body><h1>Email verified</h1>"
         "<p>Your Gmail account is verified. You can close this tab and return to Memories.</p>"
-        "<script>setTimeout(function(){ window.location.href='/profile'; }, 1200)</script>"
+        f"<script>setTimeout(function(){{ window.location.href='{FRONTEND_URL}/profile'; }}, 1200)</script>"
         "</body></html>"
     )
 
@@ -303,6 +441,6 @@ async def google_callback(request: Request, code: str, state: str, db: AsyncSess
     return HTMLResponse(
         "<html><body><h1>Google account verified</h1>"
         "<p>Your Gmail account is verified. Returning to Memories...</p>"
-        "<script>setTimeout(function(){ window.location.href='/profile'; }, 1000)</script>"
+        f"<script>setTimeout(function(){{ window.location.href='{FRONTEND_URL}/profile'; }}, 1000)</script>"
         "</body></html>"
     )

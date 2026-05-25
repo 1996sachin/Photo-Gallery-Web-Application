@@ -33,6 +33,9 @@ async def create_tables():
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_requested_at TIMESTAMPTZ"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token TEXT"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token TEXT"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_requested_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires_at TIMESTAMPTZ"))
 
 
 class User(Base):
@@ -47,6 +50,9 @@ class User(Base):
     email_verification_requested_at = Column(DateTime(timezone=True))
     email_verification_token = Column(Text)
     email_verification_expires_at = Column(DateTime(timezone=True))
+    password_reset_token = Column(Text)
+    password_reset_requested_at = Column(DateTime(timezone=True))
+    password_reset_expires_at = Column(DateTime(timezone=True))
     created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at    = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     albums        = relationship("Album", back_populates="owner", foreign_keys="Album.owner_id")

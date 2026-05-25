@@ -31,6 +31,19 @@ export const useAuthStore = create(
         return data.user
       },
 
+      requestEmailVerification: async () => {
+        const { data } = await api.post('/api/auth/me/request-email-verification')
+        const refreshed = await api.get('/api/auth/me')
+        set({ user: refreshed.data })
+        return data
+      },
+
+      verifyEmailOtp: async (code) => {
+        const { data } = await api.post('/api/auth/me/verify-email-otp', { code })
+        set({ user: data })
+        return data
+      },
+
       logout: () => set({ token: null, user: null }),
       setUser: (user) => set({ user }),
     }),

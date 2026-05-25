@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 import aiofiles
 
 from models.database import get_db, Media, User, Album
-from api.auth import get_current_user
+from api.auth import get_verified_user as get_current_user
 from services.media_processor import process_photo, process_video
 
 router = APIRouter()

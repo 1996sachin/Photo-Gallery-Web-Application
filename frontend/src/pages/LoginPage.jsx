@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '../hooks/useAuth'
-import { Camera, Heart } from 'lucide-react'
+import { api, useAuthStore } from '../hooks/useAuth'
+import { Camera, Heart, KeyRound, MailCheck } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function LoginPage() {
@@ -10,23 +10,67 @@ export default function LoginPage() {
   const [mode, setMode] = useState('login')
   const [loading, setLoading] = useState(false)
   const [form, setForm] = useState({ email: '', password: '', name: '' })
+  const [resetStep, setResetStep] = useState('request')
+  const [reset, setReset] = useState({ email: '', code: '', password: '' })
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
+  const setResetField = k => e => setReset(f => ({ ...f, [k]: e.target.value }))
+
+  const switchMode = next => {
+    setMode(next)
+    setLoading(false)
+    if (next === 'forgot') {
+      setReset(r => ({ ...r, email: form.email }))
+      setResetStep('request')
+    }
+  }
 
   const submit = async e => {
     e.preventDefault()
     setLoading(true)
     try {
       if (mode === 'login') {
-        await login(form.email, form.password)
+        const user = await login(form.email, form.password)
+        navigate(user.email_verified ? '/' : '/verify-otp')
       } else {
         if (!form.name.trim()) { toast.error('Please enter your name'); setLoading(false); return }
-        await register(form.email, form.password, form.name)
+        const user = await register(form.email, form.password, form.name)
+        navigate(user.email_verified ? '/' : '/verify-otp')
       }
-      navigate('/')
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Something went wrong')
     } finally { setLoading(false) }
   }
+
+  const requestReset = async e => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      const { data } = await api.post('/api/auth/forgot-password', { email: reset.email })
+      toast.success(data.message || 'Reset code sent')
+      setResetStep('confirm')
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Could not send reset code')
+    } finally { setLoading(false) }
+  }
+
+  const confirmReset = async e => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      const { data } = await api.post('/api/auth/reset-password', reset)
+      toast.success(data.message || 'Password updated')
+      setForm(f => ({ ...f, email: reset.email, password: '' }))
+      switchMode('login')
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Could not reset password')
+    } finally { setLoading(false) }
+  }
+
+  const title = mode === 'login'
+    ? 'Welcome back'
+    : mode === 'register'
+      ? 'Start your gallery'
+      : 'Reset password'
 
   return (
     <div style={{
@@ -60,37 +104,83 @@ export default function LoginPage() {
           {/* Card */}
           <div className="card" style={{ padding: 36 }}>
             <h2 style={{ fontFamily: 'var(--serif)', fontSize: 21, fontWeight: 500, marginBottom: 24, textAlign: 'center' }}>
-              {mode === 'login' ? 'Welcome back ✨' : 'Start your gallery'}
+              {title}
             </h2>
 
-            <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
-              {mode === 'register' && (
+            {mode === 'forgot' ? (
+              <form onSubmit={resetStep === 'request' ? requestReset : confirmReset} style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
                 <div>
-                  <label className="label">Your name</label>
-                  <input className="input" placeholder="e.g. Sarah & James" value={form.name} onChange={set('name')} required />
+                  <label className="label">Gmail address</label>
+                  <input className="input" type="email" placeholder="you@gmail.com" value={reset.email} onChange={setResetField('email')} required disabled={resetStep === 'confirm'} />
                 </div>
-              )}
-              <div>
-                <label className="label">Email address</label>
-                <input className="input" type="email" placeholder="you@example.com" value={form.email} onChange={set('email')} required />
-              </div>
-              <div>
-                <label className="label">Password</label>
-                <input className="input" type="password" placeholder="••••••••" value={form.password} onChange={set('password')} required minLength={6} />
-              </div>
+                {resetStep === 'confirm' && (
+                  <>
+                    <div>
+                      <label className="label">Reset code</label>
+                      <input
+                        className="input"
+                        inputMode="numeric"
+                        maxLength={6}
+                        placeholder="000000"
+                        value={reset.code}
+                        onChange={e => setReset(r => ({ ...r, code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="label">New password</label>
+                      <input className="input" type="password" placeholder="Minimum 6 characters" value={reset.password} onChange={setResetField('password')} required minLength={6} />
+                    </div>
+                  </>
+                )}
 
-              <button
-                type="submit" className="btn btn-primary"
-                style={{ width: '100%', justifyContent: 'center', padding: '12px', fontSize: 14.5, marginTop: 4, borderRadius: 10 }}
-                disabled={loading}
-              >
-                {loading ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}
-              </button>
-            </form>
+                <button
+                  type="submit" className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '12px', fontSize: 14.5, marginTop: 4, borderRadius: 10 }}
+                  disabled={loading}
+                >
+                  {loading ? 'Please wait...' : resetStep === 'request' ? <><MailCheck size={15} /> Send reset code</> : <><KeyRound size={15} /> Update password</>}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
+                {mode === 'register' && (
+                  <div>
+                    <label className="label">Your name</label>
+                    <input className="input" placeholder="e.g. Sarah & James" value={form.name} onChange={set('name')} required />
+                  </div>
+                )}
+                <div>
+                  <label className="label">Email address</label>
+                  <input className="input" type="email" placeholder="you@gmail.com" value={form.email} onChange={set('email')} required />
+                </div>
+                <div>
+                  <label className="label">Password</label>
+                  <input className="input" type="password" placeholder="Minimum 6 characters" value={form.password} onChange={set('password')} required minLength={6} />
+                </div>
+
+                {mode === 'login' && (
+                  <button type="button" onClick={() => switchMode('forgot')} style={{
+                    alignSelf: 'flex-end', background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'var(--c-gold-dk)', fontWeight: 600, fontSize: 12.5, fontFamily: 'inherit',
+                  }}>
+                    Forgot password?
+                  </button>
+                )}
+
+                <button
+                  type="submit" className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '12px', fontSize: 14.5, marginTop: 4, borderRadius: 10 }}
+                  disabled={loading}
+                >
+                  {loading ? 'Please wait...' : mode === 'login' ? 'Sign in' : 'Create account'}
+                </button>
+              </form>
+            )}
 
             <p style={{ textAlign: 'center', marginTop: 18, fontSize: 13.5, color: 'var(--c-brown-lt)' }}>
-              {mode === 'login' ? "New here? " : "Have an account? "}
-              <button onClick={() => setMode(mode === 'login' ? 'register' : 'login')} style={{
+              {mode === 'login' ? "New here? " : "Remember your password? "}
+              <button onClick={() => switchMode(mode === 'login' ? 'register' : 'login')} style={{
                 background: 'none', border: 'none', cursor: 'pointer',
                 color: 'var(--c-gold-dk)', fontWeight: 600, fontSize: 13.5, fontFamily: 'inherit',
               }}>

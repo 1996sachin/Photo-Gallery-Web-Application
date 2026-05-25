@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { X, Check } from 'lucide-react'
+import { X, Check, FlipHorizontal, FlipVertical } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import toast from 'react-hot-toast'
 
@@ -20,6 +20,10 @@ export default function PhotoEditor({ item, onClose, onSaved }) {
   const [brightness, setBrightness] = useState(1)
   const [contrast, setContrast] = useState(1)
   const [saturation, setSaturation] = useState(1)
+  const [sharpness, setSharpness] = useState(1)
+  const [flipH, setFlipH] = useState(false)
+  const [flipV, setFlipV] = useState(false)
+  const [cropAspect, setCropAspect] = useState('original')
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState('filters')
 
@@ -32,12 +36,22 @@ export default function PhotoEditor({ item, onClose, onSaved }) {
   const save = async () => {
     setSaving(true)
     try {
-      const calls = []
-      if (activeFilter !== 'original') calls.push(api.post('/api/edits/photo', { media_id: item.id, edit_type: 'filter', params: { name: activeFilter } }))
-      if (rotation !== 0) calls.push(api.post('/api/edits/photo', { media_id: item.id, edit_type: 'rotate', params: { degrees: rotation } }))
-      if (brightness !== 1 || contrast !== 1 || saturation !== 1) calls.push(api.post('/api/edits/photo', { media_id: item.id, edit_type: 'adjust', params: { brightness, contrast, saturation } }))
-      await Promise.all(calls)
-      onSaved()
+      const { data } = await api.post('/api/edits/photo', {
+        media_id: item.id,
+        edit_type: 'composite',
+        params: {
+          filter: activeFilter,
+          rotation,
+          brightness,
+          contrast,
+          saturation,
+          sharpness,
+          flip_horizontal: flipH,
+          flip_vertical: flipV,
+          crop_aspect: cropAspect,
+        },
+      })
+      onSaved(data)
     } catch { toast.error('Edit failed') }
     finally { setSaving(false) }
   }
@@ -80,7 +94,7 @@ export default function PhotoEditor({ item, onClose, onSaved }) {
               style={{
                 maxWidth: '100%', maxHeight: '58vh', objectFit: 'contain', borderRadius: 8,
                 filter: previewFilter(),
-                transform: `rotate(${rotation}deg)`,
+                transform: `rotate(${rotation}deg) scaleX(${flipH ? -1 : 1}) scaleY(${flipV ? -1 : 1})`,
                 transition: 'filter 0.3s, transform 0.3s',
               }}
             />
@@ -113,20 +127,37 @@ export default function PhotoEditor({ item, onClose, onSaved }) {
                   <Slider label="Brightness" value={brightness} onChange={setBrightness} />
                   <Slider label="Contrast"   value={contrast}   onChange={setContrast} />
                   <Slider label="Saturation" value={saturation} onChange={setSaturation} />
+                  <Slider label="Sharpness"  value={sharpness}  onChange={setSharpness} min={0} max={3} />
                   <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'center', fontSize: 12.5 }}
-                    onClick={() => { setBrightness(1); setContrast(1); setSaturation(1) }}>
+                    onClick={() => { setBrightness(1); setContrast(1); setSaturation(1); setSharpness(1) }}>
                     Reset adjustments
                   </button>
                 </>
               )}
               {tab === 'transform' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <label className="label">Crop preset</label>
+                  <select className="input" value={cropAspect} onChange={e => setCropAspect(e.target.value)}>
+                    <option value="original">Original</option>
+                    <option value="1:1">Square 1:1</option>
+                    <option value="4:5">Portrait 4:5</option>
+                    <option value="3:2">Classic 3:2</option>
+                    <option value="4:3">Standard 4:3</option>
+                    <option value="16:9">Wide 16:9</option>
+                    <option value="9:16">Story 9:16</option>
+                  </select>
                   {[0, 90, 180, 270].map(deg => (
                     <button key={deg} className="btn btn-ghost" style={{ justifyContent: 'flex-start', fontSize: 13, background: rotation === deg ? 'var(--c-surface2)' : '' }}
                       onClick={() => setRotation(deg)}>
                       Rotate {deg === 0 ? 'none' : deg + '°'}
                     </button>
                   ))}
+                  <button className="btn btn-ghost" onClick={() => setFlipH(v => !v)} style={{ justifyContent: 'flex-start', background: flipH ? 'var(--c-surface2)' : '' }}>
+                    <FlipHorizontal size={14} /> Flip horizontal
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => setFlipV(v => !v)} style={{ justifyContent: 'flex-start', background: flipV ? 'var(--c-surface2)' : '' }}>
+                    <FlipVertical size={14} /> Flip vertical
+                  </button>
                 </div>
               )}
             </div>

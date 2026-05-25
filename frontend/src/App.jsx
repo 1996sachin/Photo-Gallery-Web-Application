@@ -9,10 +9,22 @@ import FavoritesPage from './pages/FavoritesPage'
 import PeoplePage from './pages/PeoplePage'
 import MediaViewPage from './pages/MediaViewPage'
 import ProfilePage from './pages/ProfilePage'
+import VerifyOtpPage from './pages/VerifyOtpPage'
 
 function Guard({ children }) {
   const token = useAuthStore(s => s.token)
-  return token ? children : <Navigate to="/login" replace />
+  const user = useAuthStore(s => s.user)
+  if (!token) return <Navigate to="/login" replace />
+  if (user && !user.email_verified) return <Navigate to="/verify-otp" replace />
+  return children
+}
+
+function VerificationRoute() {
+  const token = useAuthStore(s => s.token)
+  const user = useAuthStore(s => s.user)
+  if (!token) return <Navigate to="/login" replace />
+  if (user?.email_verified) return <Navigate to="/" replace />
+  return <VerifyOtpPage />
 }
 
 export default function App() {
@@ -31,6 +43,7 @@ export default function App() {
       />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/verify-otp" element={<VerificationRoute />} />
         <Route path="/" element={<Guard><Layout /></Guard>}>
           <Route index element={<GalleryPage />} />
           <Route path="albums" element={<AlbumsPage />} />

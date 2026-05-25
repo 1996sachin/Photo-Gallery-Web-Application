@@ -155,7 +155,7 @@ export default function ProfilePage() {
             </div>
             <button type="button" className="btn btn-ghost" onClick={requestVerification} disabled={verifying || user?.email_verified}>
               {verifying ? <div className="spinner" style={{ width: 14, height: 14 }} /> : <MailCheck size={14} />}
-              {user?.email_verified ? 'Verified' : 'Email Link'}
+              {user?.email_verified ? 'Verified' : 'Send Code'}
             </button>
             <button type="button" className="btn btn-ghost" onClick={verifyWithGoogle} disabled={googleBusy || user?.email_verified}>
               {googleBusy ? <div className="spinner" style={{ width: 14, height: 14 }} /> : <MailCheck size={14} />}

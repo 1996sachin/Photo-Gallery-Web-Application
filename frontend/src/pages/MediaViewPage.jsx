@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import ReactPlayer from 'react-player'
 import { ArrowLeft, Heart, Download, Pencil, Trash2, MessageCircle, Send, MapPin, Calendar, Eye } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import { useAuthStore } from '../hooks/useAuth'
@@ -8,6 +7,7 @@ import { useMediaStore } from '../stores/mediaStore'
 import { formatDistanceToNow } from 'date-fns'
 import toast from 'react-hot-toast'
 import PhotoEditor from '../components/PhotoEditor'
+import VideoEditor from '../components/VideoEditor'
 
 export default function MediaViewPage() {
   const { id } = useParams()
@@ -87,7 +87,7 @@ export default function MediaViewPage() {
             ...(item.media_type === 'video' ? { aspectRatio: '16/9' } : {}),
           }}>
             {item.media_type === 'video'
-              ? <ReactPlayer url={item.file_url} controls width="100%" height="100%" style={{ display: 'block' }} />
+              ? <video src={item.file_url} controls playsInline preload="metadata" style={{ width: '100%', height: '100%', display: 'block', background: '#000' }} />
               : <img src={item.file_url} alt={item.title || item.original_filename}
                   style={{ width: '100%', maxHeight: '70vh', objectFit: 'contain', display: 'block' }} />
             }
@@ -102,11 +102,9 @@ export default function MediaViewPage() {
             <button className="btn btn-ghost" onClick={() => { const a = document.createElement('a'); a.href = item.file_url; a.download = item.original_filename; a.click() }}>
               <Download size={14} /> Download
             </button>
-            {item.media_type === 'photo' && (
-              <button className="btn btn-ghost" onClick={() => setEditing(true)}>
-                <Pencil size={14} /> Edit
-              </button>
-            )}
+            <button className="btn btn-ghost" onClick={() => setEditing(true)}>
+              <Pencil size={14} /> Edit
+            </button>
             <button className="btn btn-danger btn" onClick={deleteMedia} style={{ marginLeft: 'auto' }}>
               <Trash2 size={14} /> Delete
             </button>
@@ -180,8 +178,19 @@ export default function MediaViewPage() {
         </div>
       </div>
 
-      {editing && (
-        <PhotoEditor item={item} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); toast.success('Edit saved!') }} />
+      {editing && item.media_type === 'photo' && (
+        <PhotoEditor item={item} onClose={() => setEditing(false)} onSaved={(data) => {
+          setEditing(false)
+          if (data?.result_url) setItem(prev => ({ ...prev, file_url: data.result_url, width: data.width || prev.width, height: data.height || prev.height }))
+          toast.success('Edit saved!')
+        }} />
+      )}
+      {editing && item.media_type === 'video' && (
+        <VideoEditor item={item} onClose={() => setEditing(false)} onSaved={(data) => {
+          setEditing(false)
+          if (data?.result_url) setItem(prev => ({ ...prev, file_url: data.result_url, duration_seconds: data.duration_seconds || prev.duration_seconds }))
+          toast.success('Video edit saved!')
+        }} />
       )}
     </div>
   )
