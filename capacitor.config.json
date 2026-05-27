@@ -1,0 +1,5 @@
+{
+  "appId": "com.nimica.memoriesv2",
+  "appName": "Memories",
+  "webDir": "frontend/dist"
+}
