@@ -1,15 +1,45 @@
 """
 Media processor — Pillow + FFmpeg
 """
-import asyncio, uuid
+import asyncio, uuid, mimetypes, os, tempfile
 from pathlib import Path
 from typing import Optional
 import ffmpeg
 from PIL import Image, ExifTags, ImageEnhance, ImageOps
 from sqlalchemy import update
+from cryptography.fernet import Fernet
 from models.database import AsyncSessionLocal, Media
 
 THUMB_SIZE = (640, 640)
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+cipher = Fernet(ENCRYPTION_KEY.encode()) if ENCRYPTION_KEY else None
+
+
+def encrypt_file(data: bytes) -> bytes:
+    if not cipher: return data
+    return cipher.encrypt(data)
+
+
+def decrypt_file(data: bytes) -> bytes:
+    if not cipher: return data
+    return cipher.decrypt(data)
+
+
+def encrypt_path(file_path: str) -> bool:
+    if not cipher:
+        return False
+    path = Path(file_path)
+    data = path.read_bytes()
+    path.write_bytes(cipher.encrypt(data))
+    return True
+
+
+def decrypt_path_to_temp(file_path: str, suffix: Optional[str] = None) -> str:
+    path = Path(file_path)
+    data = decrypt_file(path.read_bytes())
+    with tempfile.NamedTemporaryFile(suffix=suffix or path.suffix, delete=False) as tmp:
+        tmp.write(data)
+        return tmp.name
 
 
 # ── Async entrypoints ──────────────────────────────────────────────────────────
@@ -18,6 +48,7 @@ async def process_photo(media_id: str, file_path: str, thumb_dir: str):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, _photo_sync, file_path, thumb_dir)
+        result["is_encrypted"] = await loop.run_in_executor(None, encrypt_path, file_path)
         await _update(media_id, result)
     except Exception as e:
         print(f"[photo] {media_id}: {e}")
@@ -27,9 +58,21 @@ async def process_video(media_id: str, file_path: str, thumb_dir: str):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, _video_sync, file_path, thumb_dir)
+        if result.get("file_path"):
+            result["is_encrypted"] = await loop.run_in_executor(None, encrypt_path, result["file_path"])
         await _update(media_id, result)
     except Exception as e:
         print(f"[video] {media_id}: {e}")
+
+
+async def process_document(media_id: str, file_path: str, thumb_dir: str):
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _document_sync, file_path, thumb_dir)
+        result["is_encrypted"] = bool(cipher)
+        await _update(media_id, result)
+    except Exception as e:
+        print(f"[document] {media_id}: {e}")
 
 
 # ── Sync photo processing ──────────────────────────────────────────────────────
@@ -108,6 +151,40 @@ def _make_playable_video(file_path: str) -> str:
     except Exception as exc:
         print(f"[video-transcode] {file_path}: {exc}")
         return str(source)
+
+
+# ── Sync document processing ───────────────────────────────────────────────────
+
+def _document_sync(file_path: str, thumb_dir: str) -> dict:
+    source = Path(file_path)
+    mime_type = mimetypes.guess_type(file_path)[0] or ""
+    tname = f"thumb_{source.stem}.jpg"
+    tpath = Path(thumb_dir) / tname
+
+    if mime_type == "application/pdf":
+        try:
+            # If it's a document, it might be encrypted. We need to decrypt it to a temp file for pdf2image.
+            with open(file_path, "rb") as f:
+                data = decrypt_file(f.read())
+            
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            
+            from pdf2image import convert_from_path
+            pages = convert_from_path(tmp_path, first_page=1, last_page=1, size=THUMB_SIZE[0])
+            Path(tmp_path).unlink(missing_ok=True)
+            
+            if pages:
+                pages[0].save(str(tpath), "JPEG")
+                return {"thumbnail_path": str(tpath)}
+        except Exception as e:
+            print(f"[pdf-thumb] {file_path}: {e}")
+
+    # Fallback to generic icon (this would ideally be a static file, but we'll use a placeholder colored image)
+    icon = Image.new("RGB", THUMB_SIZE, color=(120, 120, 130))
+    icon.save(str(tpath), "JPEG")
+    return {"thumbnail_path": str(tpath)}
 
 
 # ── Edit operations ────────────────────────────────────────────────────────────

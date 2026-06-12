@@ -1,15 +1,16 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, useAuthStore } from '../hooks/useAuth'
-import { Camera, Heart, KeyRound, MailCheck } from 'lucide-react'
+import { Camera, Heart, KeyRound, MailCheck, ShieldCheck } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 export default function LoginPage() {
   const navigate = useNavigate()
-  const { login, register } = useAuthStore()
-  const [mode, setMode] = useState('login')
+  const { login, register, verifyMfa } = useAuthStore()
+  const [mode, setMode] = useState('login') // 'login', 'register', 'forgot', 'mfa'
   const [loading, setLoading] = useState(false)
   const [form, setForm] = useState({ email: '', password: '', name: '' })
+  const [mfaData, setMfaData] = useState({ token: '', code: '' })
   const [resetStep, setResetStep] = useState('request')
   const [reset, setReset] = useState({ email: '', code: '', password: '' })
   const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }))
@@ -29,7 +30,15 @@ export default function LoginPage() {
     setLoading(true)
     try {
       if (mode === 'login') {
-        const user = await login(form.email, form.password)
+        const res = await login(form.email, form.password)
+        if (res.mfa_required) {
+          setMfaData({ token: res.mfa_token, code: '' })
+          setMode('mfa')
+        } else {
+          navigate(res.email_verified ? '/' : '/verify-otp')
+        }
+      } else if (mode === 'mfa') {
+        const user = await verifyMfa(mfaData.code, mfaData.token)
         navigate(user.email_verified ? '/' : '/verify-otp')
       } else {
         if (!form.name.trim()) { toast.error('Please enter your name'); setLoading(false); return }
@@ -70,7 +79,9 @@ export default function LoginPage() {
     ? 'Welcome back'
     : mode === 'register'
       ? 'Start your gallery'
-      : 'Reset password'
+      : mode === 'mfa'
+        ? 'Security Verification'
+        : 'Reset password'
 
   return (
     <div style={{
@@ -142,6 +153,39 @@ export default function LoginPage() {
                   {loading ? 'Please wait...' : resetStep === 'request' ? <><MailCheck size={15} /> Send reset code</> : <><KeyRound size={15} /> Update password</>}
                 </button>
               </form>
+            ) : mode === 'mfa' ? (
+              <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
+                <div style={{ textAlign: 'center', marginBottom: 10 }}>
+                   <ShieldCheck size={48} color="var(--c-gold)" style={{ margin: '0 auto 16px' }} />
+                   <p style={{ fontSize: 14, color: 'var(--c-brown-lt)' }}>Enter the 6-digit code from your authenticator app.</p>
+                </div>
+                <div>
+                  <input
+                    className="input"
+                    inputMode="numeric"
+                    autoFocus
+                    maxLength={6}
+                    placeholder="000 000"
+                    style={{ textAlign: 'center', fontSize: 24, letterSpacing: 8, height: 60 }}
+                    value={mfaData.code}
+                    onChange={e => setMfaData(d => ({ ...d, code: e.target.value.replace(/\D/g, '').slice(0, 6) }))}
+                    required
+                  />
+                </div>
+                <button
+                  type="submit" className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '12px', fontSize: 14.5, marginTop: 4, borderRadius: 10 }}
+                  disabled={loading || mfaData.code.length < 6}
+                >
+                  {loading ? 'Verifying...' : 'Verify & Sign in'}
+                </button>
+                <button type="button" onClick={() => switchMode('login')} style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--c-brown-lt)', fontSize: 13, marginTop: 8
+                }}>
+                  Back to login
+                </button>
+              </form>
             ) : (
               <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
                 {mode === 'register' && (
@@ -178,15 +222,17 @@ export default function LoginPage() {
               </form>
             )}
 
-            <p style={{ textAlign: 'center', marginTop: 18, fontSize: 13.5, color: 'var(--c-brown-lt)' }}>
-              {mode === 'login' ? "New here? " : "Remember your password? "}
-              <button onClick={() => switchMode(mode === 'login' ? 'register' : 'login')} style={{
-                background: 'none', border: 'none', cursor: 'pointer',
-                color: 'var(--c-gold-dk)', fontWeight: 600, fontSize: 13.5, fontFamily: 'inherit',
-              }}>
-                {mode === 'login' ? 'Create a gallery' : 'Sign in'}
-              </button>
-            </p>
+            {mode !== 'mfa' && (
+              <p style={{ textAlign: 'center', marginTop: 18, fontSize: 13.5, color: 'var(--c-brown-lt)' }}>
+                {mode === 'login' ? "New here? " : "Remember your password? "}
+                <button onClick={() => switchMode(mode === 'login' ? 'register' : 'login')} style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--c-gold-dk)', fontWeight: 600, fontSize: 13.5, fontFamily: 'inherit',
+                }}>
+                  {mode === 'login' ? 'Create a gallery' : 'Sign in'}
+                </button>
+              </p>
+            )}
           </div>
 
           <p style={{ textAlign: 'center', marginTop: 20, fontSize: 12.5, color: 'var(--c-brown-lt)', opacity: .6, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}>

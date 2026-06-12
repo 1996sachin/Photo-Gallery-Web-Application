@@ -1,4 +1,4 @@
-#!/home/sachin/projects/memories-v2/backend/venv/bin/python3.11
+#!/home/blink/Photo-Gallery-Web-Application/backend/venv/bin/python3.11
 
 import sys
 import json

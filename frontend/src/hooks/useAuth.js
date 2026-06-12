@@ -21,6 +21,15 @@ export const useAuthStore = create(
         form.append('username', email)
         form.append('password', password)
         const { data } = await api.post('/api/auth/token', form)
+        if (data.mfa_required) {
+          return { mfa_required: true, mfa_token: data.mfa_token }
+        }
+        set({ token: data.access_token, user: data.user })
+        return data.user
+      },
+
+      verifyMfa: async (code, mfa_token) => {
+        const { data } = await api.post('/api/auth/mfa/verify', { code, mfa_token })
         set({ token: data.access_token, user: data.user })
         return data.user
       },

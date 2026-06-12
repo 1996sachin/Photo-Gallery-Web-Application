@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Heart, Play } from 'lucide-react'
+import { Heart, Play, FileText } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import { useMediaStore } from '../stores/mediaStore'
 import toast from 'react-hot-toast'
@@ -22,6 +22,8 @@ export default function MediaCard({ item }) {
   }
 
   const thumb = item.thumbnail_url || item.file_url
+  const isDoc = item.media_type === 'document'
+  const isVid = item.media_type === 'video'
 
   return (
     <div
@@ -30,26 +32,29 @@ export default function MediaCard({ item }) {
       onMouseLeave={() => setHov(false)}
       style={{
         position: 'relative', cursor: 'pointer',
-        borderRadius: 11, overflow: 'hidden', aspectRatio: '1',
+        borderRadius: 11, overflow: 'hidden',
         background: 'var(--c-parchment)',
         boxShadow: hov ? 'var(--shadow-lg)' : 'var(--shadow-sm)',
         transform: hov ? 'scale(1.025)' : 'scale(1)',
         transition: 'transform 0.2s var(--ease), box-shadow 0.2s var(--ease)',
+        marginBottom: '12px',
+        display: 'block'
       }}
     >
       <img
         src={thumb} alt={item.title || item.original_filename}
         loading="lazy"
         style={{
-          width: '100%', height: '100%', objectFit: 'cover', display: 'block',
+          width: '100%', height: 'auto', display: 'block',
           transform: hov ? 'scale(1.06)' : 'scale(1)',
           transition: 'transform 0.35s var(--ease)',
+          minHeight: isDoc ? '140px' : 'auto'
         }}
         onError={e => { e.target.style.opacity = '0' }}
       />
 
       {/* Video play icon */}
-      {item.media_type === 'video' && (
+      {isVid && (
         <div style={{
           position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
           width: 38, height: 38, borderRadius: '50%',
@@ -58,6 +63,20 @@ export default function MediaCard({ item }) {
           backdropFilter: 'blur(2px)', pointerEvents: 'none',
         }}>
           <Play size={16} color="#fff" fill="#fff" />
+        </div>
+      )}
+
+      {/* Document icon overlay */}
+      {isDoc && (
+        <div style={{
+          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
+          color: 'var(--c-brown)', opacity: 0.8, pointerEvents: 'none'
+        }}>
+          <FileText size={32} />
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.05em' }}>
+            {item.original_filename.split('.').pop().toUpperCase()}
+          </span>
         </div>
       )}
 
@@ -96,17 +115,27 @@ export default function MediaCard({ item }) {
         <Heart size={13} color={fav ? '#f08878' : '#fff'} fill={fav ? '#f08878' : 'none'} />
       </button>
 
-      {/* Video badge */}
-      {item.media_type === 'video' && (
-        <div style={{
-          position: 'absolute', top: 7, left: 7,
-          background: 'rgba(44,30,15,0.55)', backdropFilter: 'blur(3px)',
-          borderRadius: 5, padding: '2px 6px',
-          fontSize: 10, color: 'rgba(232,184,106,0.95)', fontWeight: 600, letterSpacing: '0.04em',
-        }}>
-          VIDEO
-        </div>
-      )}
+      {/* Badges */}
+      <div style={{ position: 'absolute', top: 7, left: 7, display: 'flex', gap: 4 }}>
+        {isVid && (
+          <div style={{
+            background: 'rgba(44,30,15,0.55)', backdropFilter: 'blur(3px)',
+            borderRadius: 5, padding: '2px 6px',
+            fontSize: 10, color: '#e8b86a', fontWeight: 600, letterSpacing: '0.04em',
+          }}>
+            VIDEO
+          </div>
+        )}
+        {isDoc && (
+          <div style={{
+            background: 'rgba(44,30,15,0.55)', backdropFilter: 'blur(3px)',
+            borderRadius: 5, padding: '2px 6px',
+            fontSize: 10, color: '#f5ead8', fontWeight: 600, letterSpacing: '0.04em',
+          }}>
+            DOC
+          </div>
+        )}
+      </div>
     </div>
   )
 }

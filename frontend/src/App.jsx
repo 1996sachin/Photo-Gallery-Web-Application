@@ -10,6 +10,8 @@ import PeoplePage from './pages/PeoplePage'
 import MediaViewPage from './pages/MediaViewPage'
 import ProfilePage from './pages/ProfilePage'
 import VerifyOtpPage from './pages/VerifyOtpPage'
+import AdminPage from './pages/AdminPage'
+import SharedAlbumPage from './pages/SharedAlbumPage'
 
 function Guard({ children }) {
   const token = useAuthStore(s => s.token)
@@ -25,6 +27,12 @@ function VerificationRoute() {
   if (!token) return <Navigate to="/login" replace />
   if (user?.email_verified) return <Navigate to="/" replace />
   return <VerifyOtpPage />
+}
+
+function AdminGuard({ children }) {
+  const user = useAuthStore(s => s.user)
+  if (user?.role !== 'admin') return <Navigate to="/" replace />
+  return children
 }
 
 export default function App() {
@@ -43,6 +51,7 @@ export default function App() {
       />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/shared/:token" element={<SharedAlbumPage />} />
         <Route path="/verify-otp" element={<VerificationRoute />} />
         <Route path="/" element={<Guard><Layout /></Guard>}>
           <Route index element={<GalleryPage />} />
@@ -52,6 +61,7 @@ export default function App() {
           <Route path="people" element={<PeoplePage />} />
           <Route path="profile" element={<ProfilePage />} />
           <Route path="media/:id" element={<MediaViewPage />} />
+          <Route path="admin" element={<AdminGuard><AdminPage /></AdminGuard>} />
         </Route>
       </Routes>
     </BrowserRouter>

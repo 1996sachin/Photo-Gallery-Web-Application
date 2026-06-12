@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from pathlib import Path
 from email.message import EmailMessage
@@ -8,15 +8,22 @@ import hashlib
 import smtplib
 import ssl
 import httpx
+import pyotp
+import qrcode
+import io
+import base64
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 from models.database import get_db, User
+from services.audit_service import log_action
+from services.security_service import sanitize_text
+from services.limiter import limiter
 import os
 
 router = APIRouter()
@@ -50,6 +57,7 @@ class UserCreate(BaseModel):
 class UserOut(BaseModel):
     id: str; email: str; display_name: str; avatar_url: Optional[str] = None
     bio: Optional[str] = None
+    role: str = "client"
     email_verified: bool = False
     email_verification_requested_at: Optional[datetime] = None
     class Config: from_attributes = True
@@ -57,6 +65,20 @@ class UserOut(BaseModel):
 
 class Token(BaseModel):
     access_token: str; token_type: str; user: UserOut
+    mfa_required: bool = False
+    mfa_token: Optional[str] = None
+
+
+class MfaSetup(BaseModel):
+    secret: str
+    otpauth_url: str
+    qr_code: str  # base64
+
+
+class MfaVerify(BaseModel):
+    code: str
+    secret: Optional[str] = None
+    mfa_token: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
@@ -83,6 +105,10 @@ def make_token(sub: str) -> str:
     return jwt.encode({"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=EXPIRE_MIN)}, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def make_mfa_token(sub: str) -> str:
+    return jwt.encode({"sub": sub, "mfa": True, "exp": datetime.utcnow() + timedelta(minutes=10)}, SECRET_KEY, algorithm=ALGORITHM)
+
+
 def make_state_token(sub: str) -> str:
     return jwt.encode(
         {"sub": sub, "scope": "google_oauth", "exp": datetime.utcnow() + timedelta(minutes=10)},
@@ -96,8 +122,8 @@ def _normalize_email(email: str) -> str:
 
 
 def _require_gmail(email: str):
-    if not email.endswith("@gmail.com"):
-        raise HTTPException(400, "Use a Gmail address to create and verify your account")
+    # Gmail-only restriction removed; any email domain is now allowed.
+    pass
 
 
 def _hash_otp(code: str) -> str:
@@ -109,9 +135,9 @@ def _make_otp() -> str:
 
 
 def _is_expired(expires_at: datetime) -> bool:
-    now = datetime.utcnow()
-    if expires_at.tzinfo is not None:
-        now = now.replace(tzinfo=expires_at.tzinfo)
+    now = datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
     return expires_at < now
 
 
@@ -129,12 +155,18 @@ def send_code_email(to_email: str, code: str, subject: str, purpose: str):
         "This code expires in 10 minutes."
     )
 
-    context = ssl.create_default_context()
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-        if SMTP_TLS:
-            server.starttls(context=context)
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+            if SMTP_TLS:
+                server.starttls(context=context)
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+    except Exception as e:
+        print(f"FAILED TO SEND EMAIL: {e}")
+        # In local dev, we don't want to crash the app just because email failed.
+        # The user can find the code in the logs if they are watching.
+        print(f"EMAIL CONTENT: {purpose} code for {to_email} is {code}")
 
 
 def send_verification_email(to_email: str, code: str):
@@ -158,16 +190,16 @@ def send_password_reset_email(to_email: str, code: str):
 def issue_email_otp(u: User):
     code = _make_otp()
     u.email_verification_token = _hash_otp(code)
-    u.email_verification_requested_at = datetime.utcnow()
-    u.email_verification_expires_at = datetime.utcnow() + timedelta(minutes=10)
+    u.email_verification_requested_at = datetime.now(timezone.utc)
+    u.email_verification_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
     send_verification_email(u.email, code)
 
 
 def issue_password_reset_otp(u: User):
     code = _make_otp()
     u.password_reset_token = _hash_otp(code)
-    u.password_reset_requested_at = datetime.utcnow()
-    u.password_reset_expires_at = datetime.utcnow() + timedelta(minutes=10)
+    u.password_reset_requested_at = datetime.now(timezone.utc)
+    u.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
     send_password_reset_email(u.email, code)
 
 
@@ -190,6 +222,20 @@ async def get_verified_user(cu: User = Depends(get_current_user)) -> User:
     return cu
 
 
+class RoleChecker:
+    def __init__(self, *allowed_roles: str):
+        self.allowed_roles = set(allowed_roles)
+
+    async def __call__(self, cu: User = Depends(get_verified_user)) -> User:
+        if cu.role not in self.allowed_roles:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permissions")
+        return cu
+
+
+require_admin = RoleChecker("admin")
+require_business_or_admin = RoleChecker("business", "admin")
+
+
 def _out(u: User) -> UserOut:
     return UserOut(
         id=str(u.id),
@@ -197,13 +243,90 @@ def _out(u: User) -> UserOut:
         display_name=u.display_name,
         avatar_url=u.avatar_url,
         bio=u.bio,
+        role=u.role or "client",
         email_verified=bool(u.email_verified),
         email_verification_requested_at=u.email_verification_requested_at,
     )
 
 
+@router.get("/mfa/setup", response_model=MfaSetup)
+async def mfa_setup(cu: User = Depends(get_current_user)):
+    if cu.mfa_enabled:
+        raise HTTPException(400, "MFA is already enabled")
+    
+    secret = pyotp.random_base32()
+    totp = pyotp.TOTP(secret)
+    otpauth_url = totp.provisioning_uri(name=cu.email, issuer_name="Memories")
+    
+    img = qrcode.make(otpauth_url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_base64 = base64.b64encode(buf.getvalue()).decode()
+    
+    return MfaSetup(secret=secret, otpauth_url=otpauth_url, qr_code=qr_base64)
+
+
+@router.post("/mfa/enable")
+async def mfa_enable(payload: MfaVerify, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
+    if cu.mfa_enabled:
+        raise HTTPException(400, "MFA is already enabled")
+    if not payload.secret:
+        raise HTTPException(400, "Secret is required for first-time enablement")
+    
+    totp = pyotp.TOTP(payload.secret)
+    if not totp.verify(payload.code):
+        raise HTTPException(400, "Invalid MFA code")
+    
+    cu.mfa_secret = payload.secret
+    cu.mfa_enabled = True
+    await log_action(db, "mfa_enabled", cu.id, ip_address=request.client.host if request else None)
+    return {"status": "enabled"}
+
+
+@router.post("/mfa/disable")
+async def mfa_disable(payload: MfaVerify, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
+    if not cu.mfa_enabled:
+        raise HTTPException(400, "MFA is not enabled")
+    
+    totp = pyotp.TOTP(cu.mfa_secret)
+    if not totp.verify(payload.code):
+        raise HTTPException(400, "Invalid MFA code")
+    
+    cu.mfa_secret = None
+    cu.mfa_enabled = False
+    await log_action(db, "mfa_disabled", cu.id, ip_address=request.client.host if request else None)
+    return {"status": "disabled"}
+
+
+@router.post("/mfa/verify", response_model=Token)
+async def mfa_verify(payload: MfaVerify, db: AsyncSession = Depends(get_db), request: Request = None):
+    if not payload.mfa_token:
+        raise HTTPException(400, "MFA token is required")
+    
+    try:
+        data = jwt.decode(payload.mfa_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if not data.get("mfa"): raise JWTError()
+        uid = data.get("sub")
+    except JWTError:
+        raise HTTPException(401, "Invalid or expired MFA token")
+    
+    r = await db.execute(select(User).where(User.id == uuid.UUID(uid)))
+    u = r.scalar_one_or_none()
+    if not u or not u.mfa_enabled:
+        raise HTTPException(401, "User not found or MFA not enabled")
+    
+    totp = pyotp.TOTP(u.mfa_secret)
+    if not totp.verify(payload.code):
+        await log_action(db, "mfa_failed", u.id, ip_address=request.client.host if request else None)
+        raise HTTPException(401, "Invalid MFA code")
+    
+    await log_action(db, "login_success_mfa", u.id, ip_address=request.client.host if request else None)
+    return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
+
+
 @router.post("/register", response_model=Token)
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), request: Request = None):
     email = _normalize_email(payload.email)
     _require_gmail(email)
     r = await db.execute(select(User).where(User.email == email))
@@ -214,18 +337,36 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
         if not existing.email_verified:
             issue_email_otp(existing)
         return Token(access_token=make_token(str(existing.id)), token_type="bearer", user=_out(existing))
-    u = User(email=email, password_hash=pwd.hash(payload.password), display_name=payload.display_name)
+    user_count = await db.scalar(select(func.count(User.id))) or 0
+    u = User(
+        email=email,
+        password_hash=pwd.hash(payload.password),
+        display_name=payload.display_name,
+        role="admin" if user_count == 0 else "client",
+    )
     db.add(u); await db.flush()
+    await log_action(db, "register", u.id, ip_address=request.client.host if request else None)
     issue_email_otp(u)
     return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
 
 
 @router.post("/token", response_model=Token)
-async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/minute")
+async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db), request: Request = None):
     r = await db.execute(select(User).where(User.email == _normalize_email(form.username)))
     u = r.scalar_one_or_none()
     if not u or not pwd.verify(form.password, u.password_hash):
+        if u: await log_action(db, "login_failed", u.id, ip_address=request.client.host if request else None)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
+    
+    if u.mfa_enabled:
+        await log_action(db, "mfa_required", u.id, ip_address=request.client.host if request else None)
+        return Token(
+            access_token="", token_type="bearer", user=_out(u),
+            mfa_required=True, mfa_token=make_mfa_token(str(u.id))
+        )
+    
+    await log_action(db, "login_success", u.id, ip_address=request.client.host if request else None)
     return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
 
 
@@ -241,7 +382,7 @@ async def forgot_password(payload: PasswordResetRequest, db: AsyncSession = Depe
 
 
 @router.post("/reset-password")
-async def reset_password(payload: PasswordResetConfirm, db: AsyncSession = Depends(get_db)):
+async def reset_password(payload: PasswordResetConfirm, db: AsyncSession = Depends(get_db), request: Request = None):
     email = _normalize_email(payload.email)
     code = "".join(ch for ch in payload.code if ch.isdigit())
     if len(code) != 6:
@@ -258,11 +399,13 @@ async def reset_password(payload: PasswordResetConfirm, db: AsyncSession = Depen
         or _is_expired(u.password_reset_expires_at)
         or _hash_otp(code) != u.password_reset_token
     ):
+        if u: await log_action(db, "password_reset_failed", u.id, ip_address=request.client.host if request else None)
         raise HTTPException(400, "Reset code is invalid or expired")
 
     u.password_hash = pwd.hash(payload.password)
     u.password_reset_token = None
     u.password_reset_expires_at = None
+    await log_action(db, "password_reset_success", u.id, ip_address=request.client.host if request else None)
     return {"status": "reset", "message": "Password updated. Sign in with your new password."}
 
 
@@ -274,13 +417,13 @@ async def me(cu: User = Depends(get_current_user)):
 @router.patch("/me", response_model=UserOut)
 async def update_me(payload: UserUpdate, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
     if payload.display_name is not None:
-        name = payload.display_name.strip()
+        name = sanitize_text(payload.display_name.strip())
         if not name:
             raise HTTPException(400, "Display name is required")
         cu.display_name = name[:100]
 
     if payload.bio is not None:
-        cu.bio = payload.bio.strip()[:1000] or None
+        cu.bio = sanitize_text(payload.bio.strip())[:1000] or None
 
     if payload.email is not None:
         email = _normalize_email(payload.email)
@@ -315,7 +458,7 @@ async def upload_avatar(file: UploadFile = File(...), cu: User = Depends(get_cur
                 dest.unlink(missing_ok=True)
                 raise HTTPException(413, "Avatar too large (max 5 MB)")
             f.write(chunk)
-    cu.avatar_url = f"http://localhost:8000/uploads/avatars/{name}"
+    cu.avatar_url = f"{APP_URL}/uploads/avatars/{name}"
     return _out(cu)
 
 

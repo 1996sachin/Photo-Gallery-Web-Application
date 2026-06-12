@@ -1,6 +1,6 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
-import { Images, BookImage, Heart, Users, LogOut, Upload, Search, X, Camera } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Images, BookImage, Heart, Users, LogOut, Upload, Search, Camera, Sun, Moon, Shield } from 'lucide-react'
 import { useAuthStore } from '../hooks/useAuth'
 import UploadModal from './UploadModal'
 
@@ -9,6 +9,14 @@ export default function Layout() {
   const navigate = useNavigate()
   const [showUpload, setShowUpload] = useState(false)
   const [search, setSearch] = useState('')
+  const [theme, setTheme] = useState(localStorage.getItem('theme') || 'light')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light')
 
   const initials = user?.display_name
     ? user.display_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
@@ -19,6 +27,7 @@ export default function Layout() {
     { to: '/albums',   icon: BookImage,  label: 'Albums' },
     { to: '/favorites',icon: Heart,      label: 'Favorites' },
     { to: '/people',   icon: Users,      label: 'People' },
+    ...(user?.role === 'admin' ? [{ to: '/admin', icon: Shield, label: 'Admin Panel' }] : []),
   ]
 
   return (
@@ -123,9 +132,10 @@ export default function Layout() {
         {/* Top bar */}
         <header style={{
           padding: '12px 28px', display: 'flex', alignItems: 'center', gap: 12,
-          background: 'rgba(253,248,240,0.92)', backdropFilter: 'blur(12px)',
+          background: 'var(--c-surface)', backdropFilter: 'blur(12px)',
           borderBottom: '1px solid var(--c-border)', flexShrink: 0,
           position: 'sticky', top: 0, zIndex: 50,
+          transition: 'background-color 0.3s ease',
         }}>
           <div style={{ position: 'relative', flex: 1, maxWidth: 380 }}>
             <Search size={15} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--c-brown-lt)' }} />
@@ -136,6 +146,14 @@ export default function Layout() {
               onChange={e => setSearch(e.target.value)}
             />
           </div>
+          <button 
+            className="btn-icon" 
+            onClick={toggleTheme}
+            style={{ borderRadius: '10px' }}
+            title={theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
+          >
+            {theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}
+          </button>
         </header>
 
         {/* Page */}

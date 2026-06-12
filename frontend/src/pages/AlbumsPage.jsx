@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, BookImage, Plus, Trash2, Share2, Heart, Users, Upload } from 'lucide-react'
+import { ArrowLeft, BookImage, Plus, Trash2, Share2, Heart, Users, Upload, Lock, Calendar, X } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import MediaCard from '../components/MediaCard'
 import UploadModal from '../components/UploadModal'
@@ -17,6 +17,8 @@ export function AlbumsPage() {
   const [items, setItems] = useState([])
   const [mediaLoading, setMediaLoading] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
+  const [sharingAlbum, setSharingAlbum] = useState(null)
+  const [shareForm, setShareForm] = useState({ password: '', expires_at: '', removePassword: false })
 
   useEffect(() => { load() }, [])
   useEffect(() => { if (activeAlbumId) loadAlbumMedia(activeAlbumId) }, [activeAlbumId])
@@ -54,16 +56,37 @@ export function AlbumsPage() {
     toast.success('Album deleted')
   }
 
-  const share = async (event, album) => {
+  const openShare = (event, album) => {
     event?.stopPropagation()
-    const { data } = await api.post(`/api/albums/${album.id}/share`)
+    setSharingAlbum(album)
+    setShareForm({
+      password: '',
+      expires_at: album.share_expires_at ? album.share_expires_at.slice(0, 16) : '',
+      removePassword: false,
+    })
+  }
+
+  const saveShare = async () => {
+    const payload = {
+      enabled: true,
+      expires_at: shareForm.expires_at ? new Date(shareForm.expires_at).toISOString() : null,
+    }
+    if (shareForm.removePassword) payload.password = ''
+    else if (shareForm.password.trim()) payload.password = shareForm.password
+    const { data } = await api.post(`/api/albums/${sharingAlbum.id}/share`, payload)
     if (data.is_shared && data.share_token) {
       await navigator.clipboard.writeText(`${window.location.origin}/shared/${data.share_token}`).catch(() => {})
-      toast.success('Share link copied to clipboard!')
-    } else {
-      toast.success('Album is now private')
+      toast.success('Share link copied to clipboard')
     }
-    setAlbums(p => p.map(a => a.id === album.id ? { ...a, ...data } : a))
+    setAlbums(p => p.map(a => a.id === sharingAlbum.id ? { ...a, ...data } : a))
+    setSharingAlbum(null)
+  }
+
+  const disableShare = async () => {
+    const { data } = await api.post(`/api/albums/${sharingAlbum.id}/share`, { enabled: false })
+    setAlbums(p => p.map(a => a.id === sharingAlbum.id ? { ...a, ...data } : a))
+    setSharingAlbum(null)
+    toast.success('Album is now private')
   }
 
   const activeAlbum = albums.find(a => a.id === activeAlbumId)
@@ -142,7 +165,7 @@ export function AlbumsPage() {
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 }}>
                 <div style={{ fontFamily: 'var(--serif)', fontSize: 16, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{album.title}</div>
                 <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
-                  <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} title={album.is_shared ? 'Sharing on — click to disable' : 'Share album'} onClick={e => share(e, album)}>
+                  <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} title={album.is_shared ? 'Manage sharing' : 'Share album'} onClick={e => openShare(e, album)}>
                     <Share2 size={12} color={album.is_shared ? 'var(--c-gold)' : undefined} />
                   </button>
                   <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} onClick={e => { e.stopPropagation(); remove(album.id) }}>
@@ -152,9 +175,67 @@ export function AlbumsPage() {
               </div>
               {album.description && <p style={{ fontSize: 12.5, color: 'var(--c-brown-lt)', marginBottom: 8, lineHeight: 1.5 }}>{album.description}</p>}
               <div style={{ fontSize: 11.5, color: 'var(--c-brown-lt)', marginTop: 6 }}>{new Date(album.created_at).toLocaleDateString()}</div>
-              {album.is_shared && <div className="badge" style={{ marginTop: 8 }}>Shared</div>}
+              {album.is_shared && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  <div className="badge">Shared</div>
+                  {album.share_has_password && <div className="badge"><Lock size={10} /> Password</div>}
+                  {album.share_expires_at && <div className="badge"><Calendar size={10} /> Expires</div>}
+                </div>
+              )}
             </div>
           ))}
+        </div>
+      )}
+
+      {sharingAlbum && (
+        <div className="overlay" onClick={() => setSharingAlbum(null)}>
+          <div className="card share-modal" onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+              <div>
+                <h2 className="section-title">Share Album</h2>
+                <p style={{ color: 'var(--c-brown-lt)', fontSize: 12.5, marginTop: 4 }}>{sharingAlbum.title}</p>
+              </div>
+              <button className="btn-icon" onClick={() => setSharingAlbum(null)} title="Close"><X size={16} /></button>
+            </div>
+
+            {sharingAlbum.is_shared && sharingAlbum.share_token && (
+              <div style={{ marginBottom: 14 }}>
+                <label className="label">Share link</label>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input className="input" readOnly value={`${window.location.origin}/shared/${sharingAlbum.share_token}`} />
+                  <button className="btn btn-ghost" onClick={() => {
+                    navigator.clipboard.writeText(`${window.location.origin}/shared/${sharingAlbum.share_token}`).catch(() => {})
+                    toast.success('Copied')
+                  }}>Copy</button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gap: 12 }}>
+              <div>
+                <label className="label">Password</label>
+                <input className="input" type="password" placeholder={sharingAlbum.share_has_password ? 'Leave blank to keep current password' : 'Optional'} value={shareForm.password} onChange={e => setShareForm(f => ({ ...f, password: e.target.value, removePassword: false }))} />
+                {sharingAlbum.share_has_password && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8, fontSize: 12.5, color: 'var(--c-brown-lt)' }}>
+                    <input type="checkbox" checked={shareForm.removePassword} onChange={e => setShareForm(f => ({ ...f, removePassword: e.target.checked, password: e.target.checked ? '' : f.password }))} />
+                    Remove existing password
+                  </label>
+                )}
+              </div>
+              <div>
+                <label className="label">Expires at</label>
+                <input className="input" type="datetime-local" value={shareForm.expires_at} onChange={e => setShareForm(f => ({ ...f, expires_at: e.target.value }))} />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 18 }}>
+              <button className="btn btn-danger" onClick={disableShare} disabled={!sharingAlbum.is_shared}>Disable</button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-ghost" onClick={() => setSharingAlbum(null)}>Cancel</button>
+                <button className="btn btn-primary" onClick={saveShare}><Share2 size={14} /> Save & Copy Link</button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

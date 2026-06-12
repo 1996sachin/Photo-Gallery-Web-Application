@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { X, Upload, Image, Film, CheckCircle2, AlertCircle, CloudUpload } from 'lucide-react'
+import { X, Upload, Image, Film, FileText, CheckCircle2, AlertCircle, CloudUpload } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import { useMediaStore } from '../stores/mediaStore'
 import toast from 'react-hot-toast'
@@ -9,7 +9,8 @@ const fmtSize = b => b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576)
 
 function FileRow({ name, size, type, status, progress }) {
   const isVid = type?.startsWith('video/')
-  const statusColor = { done: '#5a9a5a', error: '#c94040', uploading: 'var(--c-gold)', pending: 'var(--c-border-md)' }
+  const isDoc = type?.includes('pdf') || type?.includes('word') || type?.includes('text') || name.endsWith('.pdf') || name.endsWith('.docx') || name.endsWith('.txt')
+  
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
@@ -17,10 +18,10 @@ function FileRow({ name, size, type, status, progress }) {
     }}>
       <div style={{
         width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-        background: isVid ? 'rgba(100,80,200,0.1)' : 'rgba(200,150,60,0.1)',
+        background: isVid ? 'rgba(100,80,200,0.1)' : (isDoc ? 'rgba(120,120,130,0.1)' : 'rgba(200,150,60,0.1)'),
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        {isVid ? <Film size={15} color="#8878c8" /> : <Image size={15} color="var(--c-gold)" />}
+        {isVid ? <Film size={15} color="#8878c8" /> : (isDoc ? <FileText size={15} color="#787882" /> : <Image size={15} color="var(--c-gold)" />)}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
@@ -57,7 +58,14 @@ export default function UploadModal({ onClose, albumId, onUploaded }) {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: { 'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif'], 'video/*': ['.mp4', '.mov', '.webm', '.avi'] },
+    accept: { 
+      'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif'], 
+      'video/*': ['.mp4', '.mov', '.webm', '.avi'],
+      'application/pdf': ['.pdf'],
+      'text/plain': ['.txt'],
+      'application/msword': ['.doc'],
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx']
+    },
   })
 
   const uploadAll = async () => {
@@ -95,7 +103,7 @@ export default function UploadModal({ onClose, albumId, onUploaded }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
           <div>
             <h2 style={{ fontFamily: 'var(--serif)', fontSize: 21, fontWeight: 500 }}>Upload Memories</h2>
-            <p style={{ fontSize: 12.5, color: 'var(--c-brown-lt)', marginTop: 2 }}>Photos & videos for all your loved ones</p>
+            <p style={{ fontSize: 12.5, color: 'var(--c-brown-lt)', marginTop: 2 }}>Photos, videos & documents for all your loved ones</p>
           </div>
           <button className="btn btn-icon btn" onClick={onClose} disabled={busy}><X size={16} /></button>
         </div>
@@ -110,10 +118,10 @@ export default function UploadModal({ onClose, albumId, onUploaded }) {
           <input {...getInputProps()} />
           <CloudUpload size={36} style={{ color: isDragActive ? 'var(--c-gold)' : 'var(--c-brown-lt)', margin: '0 auto 10px', display: 'block' }} />
           <div style={{ fontFamily: 'var(--serif)', fontSize: 15.5, color: 'var(--c-brown)', marginBottom: 4 }}>
-            {isDragActive ? 'Drop your memories here…' : 'Drag photos & videos here'}
+            {isDragActive ? 'Drop your memories here…' : 'Drag photos, videos & docs here'}
           </div>
           <div style={{ fontSize: 12.5, color: 'var(--c-brown-lt)' }}>
-            or click to browse · JPG PNG WEBP HEIC MP4 MOV
+            or click to browse · JPG PNG WEBP PDF DOCX
           </div>
         </div>
 
