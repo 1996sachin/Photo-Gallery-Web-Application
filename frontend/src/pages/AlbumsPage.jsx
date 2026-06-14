@@ -1,39 +1,89 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, BookImage, Plus, Trash2, Share2, Heart, Users, Upload, Lock, Calendar, X } from 'lucide-react'
+import { Plus, BookImage, Trash2, ArrowLeft, Upload, Share2, Calendar, Lock, X, Copy, Shield, ShieldCheck, Heart, Users } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import MediaCard from '../components/MediaCard'
 import UploadModal from '../components/UploadModal'
+import AccessControlModal from '../components/AccessControlModal'
 import toast from 'react-hot-toast'
+
+const AlbumGridItem = ({ album, navigate, openShare, setManagingAccess, remove }) => (
+  <div key={album.id} className="card" onClick={() => navigate(`/albums/${album.id}`)} style={{ padding: 18, transition: 'box-shadow 0.15s', cursor: 'pointer' }}>
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 }}>
+      <div style={{ fontFamily: 'var(--serif)', fontSize: 16, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{album.title}</div>
+      <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+        {album.is_mine ? (
+          <>
+            <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} title={album.is_shared ? 'Manage sharing' : 'Share album'} onClick={e => openShare(e, album)}>
+              <Share2 size={12} color={album.is_shared ? 'var(--c-gold)' : undefined} />
+            </button>
+            <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} title="Manage access" onClick={e => { e.stopPropagation(); setManagingAccess(album) }}>
+              <Shield size={12} />
+            </button>
+            <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} onClick={e => { e.stopPropagation(); remove(album.id) }}>
+              <Trash2 size={12} />
+            </button>
+          </>
+        ) : (
+          <div className="badge" style={{ background: 'var(--c-gold)', color: '#fff' }}>Shared</div>
+        )}
+      </div>
+    </div>
+    {album.description && <p style={{ fontSize: 12.5, color: 'var(--c-brown-lt)', marginBottom: 8, lineHeight: 1.5 }}>{album.description}</p>}
+    <div style={{ fontSize: 11.5, color: 'var(--c-brown-lt)', marginTop: 6 }}>{new Date(album.created_at).toLocaleDateString()}</div>
+    {album.is_shared && (
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+        <div className="badge">Shared</div>
+        {album.share_has_password && <div className="badge"><Lock size={10} /> Password</div>}
+        {album.share_expires_at && <div className="badge"><Calendar size={10} /> Expires</div>}
+      </div>
+    )}
+  </div>
+)
 
 // ─── Albums ──────────────────────────────────────────────
 export function AlbumsPage() {
   const navigate = useNavigate()
   const { id: activeAlbumId } = useParams()
-  const [albums, setAlbums] = useState([])
+  const [albums, setAlbums] = useState([]) // Root level albums
+  const [subAlbums, setSubAlbums] = useState([]) // Sub-folders for active album
+  const [currentAlbum, setCurrentAlbum] = useState(null)
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({ title: '', description: '' })
-  const [items, setItems] = useState([])
+  const [items, setItems] = useState([]) // Photos in active album
   const [mediaLoading, setMediaLoading] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
   const [sharingAlbum, setSharingAlbum] = useState(null)
+  const [managingAccess, setManagingAccess] = useState(null)
   const [shareForm, setShareForm] = useState({ password: '', expires_at: '', removePassword: false })
 
-  useEffect(() => { load() }, [])
-  useEffect(() => { if (activeAlbumId) loadAlbumMedia(activeAlbumId) }, [activeAlbumId])
+  useEffect(() => { 
+    if (!activeAlbumId) loadRoot() 
+    else loadLevel(activeAlbumId)
+  }, [activeAlbumId])
 
-  const load = async () => {
+  const loadRoot = async () => {
     setLoading(true)
-    try { const { data } = await api.get('/api/albums/'); setAlbums(data) }
+    try { 
+      const { data } = await api.get('/api/albums/', { params: { parent_id: null } })
+      setAlbums(data) 
+      setCurrentAlbum(null)
+    }
     finally { setLoading(false) }
   }
 
-  const loadAlbumMedia = async albumId => {
+  const loadLevel = async (albumId) => {
     setMediaLoading(true)
     try {
-      const { data } = await api.get('/api/media/', { params: { album_id: albumId, per_page: 100 } })
-      setItems(data)
+      const [mediaRes, subsRes, selfRes] = await Promise.all([
+        api.get('/api/media/', { params: { album_id: albumId, per_page: 100 } }),
+        api.get('/api/albums/', { params: { parent_id: albumId } }),
+        api.get(`/api/albums/${albumId}`)
+      ])
+      setItems(mediaRes.data)
+      setSubAlbums(subsRes.data)
+      setCurrentAlbum(selfRes.data)
     } finally {
       setMediaLoading(false)
     }
@@ -41,19 +91,28 @@ export function AlbumsPage() {
 
   const create = async () => {
     if (!form.title.trim()) return
-    const { data } = await api.post('/api/albums/', { title: form.title.trim(), description: form.description.trim() || null })
-    setAlbums(p => [data, ...p])
+    const { data } = await api.post('/api/albums/', { 
+      title: form.title.trim(), 
+      description: form.description.trim() || null,
+      parent_id: activeAlbumId || null
+    })
+    if (activeAlbumId) setSubAlbums(p => [data, ...p])
+    else setAlbums(p => [data, ...p])
     setForm({ title: '', description: '' })
     setCreating(false)
-    toast.success('Album created!')
+    toast.success('Folder created!')
   }
 
   const remove = async id => {
-    if (!confirm('Delete this album? Photos inside are kept.')) return
+    if (!confirm('Delete this folder? Photos inside are kept.')) return
     await api.delete(`/api/albums/${id}`)
-    setAlbums(p => p.filter(a => a.id !== id))
-    if (activeAlbumId === id) navigate('/albums')
-    toast.success('Album deleted')
+    if (activeAlbumId === id) {
+        navigate(currentAlbum?.parent_id ? `/albums/${currentAlbum.parent_id}` : '/albums')
+    } else {
+        setAlbums(p => p.filter(a => a.id !== id))
+        setSubAlbums(p => p.filter(a => a.id !== id))
+    }
+    toast.success('Folder deleted')
   }
 
   const openShare = (event, album) => {
@@ -78,54 +137,91 @@ export function AlbumsPage() {
       await navigator.clipboard.writeText(`${window.location.origin}/shared/${data.share_token}`).catch(() => {})
       toast.success('Share link copied to clipboard')
     }
-    setAlbums(p => p.map(a => a.id === sharingAlbum.id ? { ...a, ...data } : a))
+    const updater = a => a.id === sharingAlbum.id ? { ...a, ...data } : a
+    setAlbums(p => p.map(updater))
+    setSubAlbums(p => p.map(updater))
     setSharingAlbum(null)
   }
 
   const disableShare = async () => {
     const { data } = await api.post(`/api/albums/${sharingAlbum.id}/share`, { enabled: false })
-    setAlbums(p => p.map(a => a.id === sharingAlbum.id ? { ...a, ...data } : a))
+    const updater = a => a.id === sharingAlbum.id ? { ...a, ...data } : a
+    setAlbums(p => p.map(updater))
+    setSubAlbums(p => p.map(updater))
     setSharingAlbum(null)
     toast.success('Album is now private')
   }
-
-  const activeAlbum = albums.find(a => a.id === activeAlbumId)
 
   if (activeAlbumId) {
     return (
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 22, gap: 12, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            <button className="btn btn-icon btn" style={{ width: 34, height: 34 }} onClick={() => navigate('/albums')} title="Back to albums">
+            <button className="btn btn-icon btn" style={{ width: 34, height: 34 }} onClick={() => navigate(currentAlbum?.parent_id ? `/albums/${currentAlbum.parent_id}` : '/albums')} title="Go Up">
               <ArrowLeft size={15} />
             </button>
             <div style={{ minWidth: 0 }}>
-              <h1 className="page-title" style={{ marginBottom: 2 }}>{activeAlbum?.title || 'Album'}</h1>
-              {activeAlbum?.description && <p style={{ fontSize: 13, color: 'var(--c-brown-lt)' }}>{activeAlbum.description}</p>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--c-brown-lt)', marginBottom: 2 }}>
+                <span style={{ cursor: 'pointer' }} onClick={() => navigate('/albums')}>Albums</span>
+                <span>/</span>
+                <span style={{ fontWeight: 600 }}>{currentAlbum?.title || '...'}</span>
+              </div>
+              <h1 className="page-title" style={{ marginBottom: 2 }}>{currentAlbum?.title || 'Album'}</h1>
+              {currentAlbum?.description && <p style={{ fontSize: 13, color: 'var(--c-brown-lt)' }}>{currentAlbum.description}</p>}
             </div>
           </div>
-          <button className="btn btn-primary" onClick={() => setShowUpload(true)}>
-            <Upload size={14} /> Add Photos
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" onClick={() => setCreating(true)}><Plus size={14} /> New Folder</button>
+            <button className="btn btn-primary" onClick={() => setShowUpload(true)}>
+              <Upload size={14} /> Add Photos
+            </button>
+          </div>
         </div>
+
+        {creating && (
+            <div className="card" style={{ padding: 20, marginBottom: 18, display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+            <div style={{ flex: 1 }}>
+                <label className="label">Folder name</label>
+                <input className="input" placeholder="e.g. Vacation Photos" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} onKeyDown={e => e.key === 'Enter' && create()} autoFocus />
+            </div>
+            <button className="btn btn-primary" onClick={create}>Create</button>
+            <button className="btn btn-ghost" onClick={() => setCreating(false)}>Cancel</button>
+            </div>
+        )}
 
         {mediaLoading ? (
           <div className="empty-state"><div className="spinner" /></div>
-        ) : items.length === 0 ? (
-          <div className="empty-state">
-            <BookImage size={56} />
-            <h3>No photos in this album yet</h3>
-            <p>Upload photos or videos here to add them to this album.</p>
-            <button className="btn btn-primary" onClick={() => setShowUpload(true)}><Upload size={14} /> Add Photos</button>
-          </div>
         ) : (
-          <div className="media-grid">{items.map(item => <MediaCard key={item.id} item={item} />)}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+            {subAlbums.length > 0 && (
+              <section>
+                <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--c-brown-lt)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Folders</h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+                  {subAlbums.map(album => (
+                    <AlbumGridItem key={album.id} album={album} navigate={navigate} openShare={openShare} setManagingAccess={setManagingAccess} remove={remove} />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            <section>
+              <h3 style={{ fontSize: 13, fontWeight: 600, color: 'var(--c-brown-lt)', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Memories</h3>
+              {items.length === 0 ? (
+                <div className="empty-state" style={{ padding: '40px 0' }}>
+                  <BookImage size={40} opacity={0.4} />
+                  <p style={{ marginTop: 10 }}>No photos in this folder yet</p>
+                </div>
+              ) : (
+                <div className="media-grid">{items.map(item => <MediaCard key={item.id} item={item} />)}</div>
+              )}
+            </section>
+          </div>
         )}
 
         {showUpload && (
           <UploadModal
             albumId={activeAlbumId}
-            onUploaded={() => loadAlbumMedia(activeAlbumId)}
+            onUploaded={() => loadLevel(activeAlbumId)}
             onClose={() => setShowUpload(false)}
           />
         )}
@@ -161,28 +257,7 @@ export function AlbumsPage() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 14 }}>
           {albums.map(album => (
-            <div key={album.id} className="card" onClick={() => navigate(`/albums/${album.id}`)} style={{ padding: 18, transition: 'box-shadow 0.15s', cursor: 'pointer' }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 }}>
-                <div style={{ fontFamily: 'var(--serif)', fontSize: 16, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{album.title}</div>
-                <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
-                  <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} title={album.is_shared ? 'Manage sharing' : 'Share album'} onClick={e => openShare(e, album)}>
-                    <Share2 size={12} color={album.is_shared ? 'var(--c-gold)' : undefined} />
-                  </button>
-                  <button className="btn btn-icon btn" style={{ width: 28, height: 28 }} onClick={e => { e.stopPropagation(); remove(album.id) }}>
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-              {album.description && <p style={{ fontSize: 12.5, color: 'var(--c-brown-lt)', marginBottom: 8, lineHeight: 1.5 }}>{album.description}</p>}
-              <div style={{ fontSize: 11.5, color: 'var(--c-brown-lt)', marginTop: 6 }}>{new Date(album.created_at).toLocaleDateString()}</div>
-              {album.is_shared && (
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                  <div className="badge">Shared</div>
-                  {album.share_has_password && <div className="badge"><Lock size={10} /> Password</div>}
-                  {album.share_expires_at && <div className="badge"><Calendar size={10} /> Expires</div>}
-                </div>
-              )}
-            </div>
+            <AlbumGridItem key={album.id} album={album} navigate={navigate} openShare={openShare} setManagingAccess={setManagingAccess} remove={remove} />
           ))}
         </div>
       )}
@@ -237,6 +312,15 @@ export function AlbumsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {managingAccess && (
+        <AccessControlModal
+          type="album"
+          id={managingAccess.id}
+          title={managingAccess.title}
+          onClose={() => setManagingAccess(null)}
+        />
       )}
     </div>
   )

@@ -12,6 +12,11 @@ import ProfilePage from './pages/ProfilePage'
 import VerifyOtpPage from './pages/VerifyOtpPage'
 import AdminPage from './pages/AdminPage'
 import SharedAlbumPage from './pages/SharedAlbumPage'
+import SharedMediaPage from './pages/SharedMediaPage'
+import SharedWithMePage from './pages/SharedWithMePage'
+import ActivityPage from './pages/ActivityPage'
+import TrashPage from './pages/TrashPage'
+import MapPage from './pages/MapPage'
 
 function Guard({ children }) {
   const token = useAuthStore(s => s.token)
@@ -52,14 +57,19 @@ export default function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/shared/:token" element={<SharedAlbumPage />} />
+        <Route path="/shared/item/:token" element={<SharedMediaPage />} />
         <Route path="/verify-otp" element={<VerificationRoute />} />
         <Route path="/" element={<Guard><Layout /></Guard>}>
           <Route index element={<GalleryPage />} />
           <Route path="albums" element={<AlbumsPage />} />
           <Route path="albums/:id" element={<AlbumsPage />} />
+          <Route path="shared-with-me" element={<SharedWithMePage />} />
+          <Route path="activity" element={<ActivityPage />} />
           <Route path="favorites" element={<FavoritesPage />} />
           <Route path="people" element={<PeoplePage />} />
           <Route path="profile" element={<ProfilePage />} />
+          <Route path="trash" element={<TrashPage />} />
+          <Route path="map" element={<MapPage />} />
           <Route path="media/:id" element={<MediaViewPage />} />
           <Route path="admin" element={<AdminGuard><AdminPage /></AdminGuard>} />
         </Route>

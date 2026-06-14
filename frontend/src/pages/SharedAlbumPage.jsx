@@ -44,11 +44,16 @@ export default function SharedAlbumPage() {
 
   useEffect(() => { load() }, [token, submittedPassword])
 
-  function fileUrl(item) {
-    const url = new URL(item.file_url)
-    url.searchParams.set('token', params.token)
-    if (params.password) url.searchParams.set('password', params.password)
-    return url.toString()
+  function getAuthenticatedUrl(baseUrl) {
+    if (!baseUrl) return ''
+    try {
+      const url = new URL(baseUrl, window.location.origin)
+      if (params.token) url.searchParams.set('token', params.token)
+      if (params.password) url.searchParams.set('password', params.password)
+      return url.toString()
+    } catch (e) {
+      return baseUrl
+    }
   }
 
   if (loading) {
@@ -91,13 +96,14 @@ export default function SharedAlbumPage() {
           {items.map(item => {
             const isVideo = item.media_type === 'video'
             const isDoc = item.media_type === 'document'
-            const url = fileUrl(item)
+            const url = getAuthenticatedUrl(item.file_url)
+            const thumbUrl = getAuthenticatedUrl(item.thumbnail_url) || url
             return (
               <a key={item.id} className="shared-card" href={url} target="_blank" rel="noreferrer">
                 {isDoc ? (
                   <div className="shared-doc"><FileText size={34} /><span>{item.original_filename}</span></div>
                 ) : (
-                  <img src={item.thumbnail_url || url} alt={item.title || item.original_filename} loading="lazy" />
+                  <img src={thumbUrl} alt={item.title || item.original_filename} loading="lazy" />
                 )}
                 {isVideo && <div className="shared-play"><Play size={16} fill="#fff" /></div>}
                 <div className="shared-card-caption">{item.title || item.original_filename}</div>

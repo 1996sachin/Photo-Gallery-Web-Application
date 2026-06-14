@@ -41,7 +41,7 @@ CREATE TABLE media (
     original_filename VARCHAR(500) NOT NULL,
     file_path         TEXT NOT NULL,
     thumbnail_path    TEXT,
-    media_type        VARCHAR(10) NOT NULL CHECK (media_type IN ('photo','video')),
+    media_type        VARCHAR(10) NOT NULL CHECK (media_type IN ('photo','video','document')),
     mime_type         VARCHAR(100) NOT NULL,
     file_size_bytes   BIGINT NOT NULL,
     width             INTEGER,

@@ -1,11 +1,13 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
-import { Images, BookImage, Heart, Users, LogOut, Upload, Search, Camera, Sun, Moon, Shield } from 'lucide-react'
+import { Images, BookImage, Heart, Users, LogOut, Upload, Search, Camera, Sun, Moon, Shield, Map as MapIcon, Trash2, Share2, Activity } from 'lucide-react'
 import { useAuthStore } from '../hooks/useAuth'
+import { useNotifications } from '../hooks/useNotifications'
 import UploadModal from './UploadModal'
 
 export default function Layout() {
   const { user, logout } = useAuthStore()
+  useNotifications()
   const navigate = useNavigate()
   const [showUpload, setShowUpload] = useState(false)
   const [search, setSearch] = useState('')
@@ -25,8 +27,12 @@ export default function Layout() {
   const navItems = [
     { to: '/',         icon: Images,     label: 'All Memories' },
     { to: '/albums',   icon: BookImage,  label: 'Albums' },
+    { to: '/shared-with-me', icon: Share2, label: 'Shared with me' },
+    { to: '/activity',       icon: Activity, label: 'Activity' },
     { to: '/favorites',icon: Heart,      label: 'Favorites' },
     { to: '/people',   icon: Users,      label: 'People' },
+    { to: '/map',      icon: MapIcon,    label: 'Map' },
+    { to: '/trash',    icon: Trash2,     label: 'Trash' },
     ...(user?.role === 'admin' ? [{ to: '/admin', icon: Shield, label: 'Admin Panel' }] : []),
   ]
 

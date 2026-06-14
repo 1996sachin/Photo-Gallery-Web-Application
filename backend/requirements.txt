@@ -22,3 +22,4 @@ cryptography==48.0.0
 bleach==6.1.0
 
 slowapi
+minio

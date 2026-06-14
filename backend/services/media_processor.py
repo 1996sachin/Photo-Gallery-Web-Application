@@ -9,70 +9,163 @@ from PIL import Image, ExifTags, ImageEnhance, ImageOps
 from sqlalchemy import update
 from cryptography.fernet import Fernet
 from models.database import AsyncSessionLocal, Media
+from services.storage import upload_file, download_file, delete_file, generate_object_key
+from services.tagging_service import suggest_tags
+from services.encryption_service import encrypt_data, decrypt_data
 
 THUMB_SIZE = (640, 640)
-ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
-cipher = Fernet(ENCRYPTION_KEY.encode()) if ENCRYPTION_KEY else None
 
-
-def encrypt_file(data: bytes) -> bytes:
-    if not cipher: return data
-    return cipher.encrypt(data)
-
-
-def decrypt_file(data: bytes) -> bytes:
-    if not cipher: return data
-    return cipher.decrypt(data)
-
-
-def encrypt_path(file_path: str) -> bool:
-    if not cipher:
-        return False
+def encrypt_path(file_path: str) -> tuple[bool, Optional[bytes]]:
     path = Path(file_path)
     data = path.read_bytes()
-    path.write_bytes(cipher.encrypt(data))
-    return True
-
-
-def decrypt_path_to_temp(file_path: str, suffix: Optional[str] = None) -> str:
-    path = Path(file_path)
-    data = decrypt_file(path.read_bytes())
-    with tempfile.NamedTemporaryFile(suffix=suffix or path.suffix, delete=False) as tmp:
-        tmp.write(data)
-        return tmp.name
+    ciphertext, iv = encrypt_data(data)
+    if iv:
+        path.write_bytes(ciphertext)
+        return True, iv
+    return False, None
 
 
 # ── Async entrypoints ──────────────────────────────────────────────────────────
 
-async def process_photo(media_id: str, file_path: str, thumb_dir: str):
+async def process_photo(media_id: str, object_key: str, thumb_dir: str):
+    tmp_path = None
+    tmp_thumb = None
     try:
+        ext = Path(object_key).suffix
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        download_file(object_key, tmp_path)
+        
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _photo_sync, file_path, thumb_dir)
-        result["is_encrypted"] = await loop.run_in_executor(None, encrypt_path, file_path)
+        result = await loop.run_in_executor(None, _photo_sync, tmp_path, thumb_dir)
+        
+        # Result contains local thumbnail_path. Upload it to Minio.
+        local_thumb = result.pop("thumbnail_path")
+        thumb_key = generate_object_key(object_key.split("/")[0], Path(local_thumb).name, prefix="thumbnails")
+        upload_file(local_thumb, thumb_key, content_type="image/jpeg")
+        result["thumbnail_path"] = thumb_key
+        
+        # Encryption
+        is_enc, iv = await loop.run_in_executor(None, encrypt_path, tmp_path)
+        if is_enc:
+            # Upload encrypted version back to Minio
+            upload_file(tmp_path, object_key) # Overwrite with encrypted
+            result["is_encrypted"] = True
+            result["encryption_iv"] = iv
+        
+        # AI Tagging
+        async with AsyncSessionLocal() as db:
+            m = await db.get(Media, uuid.UUID(media_id))
+            if m:
+                tags = await suggest_tags(media_id, m.title, m.caption)
+                result["tags"] = tags
+        
         await _update(media_id, result)
+        
+        if os.path.exists(local_thumb):
+            os.unlink(local_thumb)
     except Exception as e:
         print(f"[photo] {media_id}: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
-async def process_video(media_id: str, file_path: str, thumb_dir: str):
+async def process_video(media_id: str, object_key: str, thumb_dir: str):
+    tmp_path = None
     try:
+        ext = Path(object_key).suffix
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        download_file(object_key, tmp_path)
+        
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _video_sync, file_path, thumb_dir)
-        if result.get("file_path"):
-            result["is_encrypted"] = await loop.run_in_executor(None, encrypt_path, result["file_path"])
+        result = await loop.run_in_executor(None, _video_sync, tmp_path, thumb_dir)
+        
+        # Video sync might have created a new playable mp4 file
+        playable_local = result.get("file_path")
+        if playable_local and playable_local != tmp_path:
+            # Upload playable version to Minio
+            # We can either replace the original or keep both. Usually we replace or use the new one.
+            # Let's replace the object_key with the playable version if it changed.
+            new_object_key = generate_object_key(object_key.split("/")[0], Path(playable_local).name)
+            upload_file(playable_local, new_object_key, content_type="video/mp4")
+            delete_file(object_key)
+            result["file_path"] = new_object_key
+            result["filename"] = Path(new_object_key).name
+            target_for_encryption = playable_local
+        else:
+            target_for_encryption = tmp_path
+            result["file_path"] = object_key
+
+        # Thumbnail upload
+        local_thumb = result.pop("thumbnail_path")
+        thumb_key = generate_object_key(object_key.split("/")[0], Path(local_thumb).name, prefix="thumbnails")
+        upload_file(local_thumb, thumb_key, content_type="image/jpeg")
+        result["thumbnail_path"] = thumb_key
+
+        # Encryption
+        is_enc, iv = await loop.run_in_executor(None, encrypt_path, target_for_encryption)
+        if is_enc:
+            upload_file(target_for_encryption, result["file_path"])
+            result["is_encrypted"] = True
+            result["encryption_iv"] = iv
+        
+        # AI Tagging
+        async with AsyncSessionLocal() as db:
+            m = await db.get(Media, uuid.UUID(media_id))
+            if m:
+                tags = await suggest_tags(media_id, m.title, m.caption)
+                result["tags"] = tags
+
         await _update(media_id, result)
+        
+        if os.path.exists(local_thumb): os.unlink(local_thumb)
+        if playable_local and playable_local != tmp_path and os.path.exists(playable_local):
+            os.unlink(playable_local)
+            
     except Exception as e:
         print(f"[video] {media_id}: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
-async def process_document(media_id: str, file_path: str, thumb_dir: str):
+async def process_document(media_id: str, object_key: str, thumb_dir: str):
+    tmp_path = None
     try:
+        ext = Path(object_key).suffix
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        download_file(object_key, tmp_path)
+        
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, _document_sync, file_path, thumb_dir)
-        result["is_encrypted"] = bool(cipher)
+        result = await loop.run_in_executor(None, _document_sync, tmp_path, thumb_dir)
+        
+        # Thumbnail upload
+        local_thumb = result.pop("thumbnail_path")
+        thumb_key = generate_object_key(object_key.split("/")[0], Path(local_thumb).name, prefix="thumbnails")
+        upload_file(local_thumb, thumb_key, content_type="image/jpeg")
+        result["thumbnail_path"] = thumb_key
+
+        # Encryption
+        is_enc, iv = await loop.run_in_executor(None, encrypt_path, tmp_path)
+        if is_enc:
+            upload_file(tmp_path, object_key)
+            result["is_encrypted"] = True
+            result["encryption_iv"] = iv
+            
         await _update(media_id, result)
+        
+        if os.path.exists(local_thumb): os.unlink(local_thumb)
     except Exception as e:
         print(f"[document] {media_id}: {e}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 # ── Sync photo processing ──────────────────────────────────────────────────────
@@ -89,19 +182,42 @@ def _photo_sync(file_path: str, thumb_dir: str) -> dict:
     t.convert("RGB").save(tpath, "JPEG", quality=85)
 
     # EXIF
-    meta, taken_at = {}, None
+    meta, taken_at, lat, lon = {}, None, None, None
     try:
         exif = img._getexif() or {}
         for tag, val in exif.items():
             name = ExifTags.TAGS.get(tag, str(tag))
             try: meta[name] = str(val)
             except: pass
+        
         if "DateTime" in meta:
             from datetime import datetime
             taken_at = datetime.strptime(meta["DateTime"], "%Y:%m:%d %H:%M:%S")
+
+        # GPS
+        gps_info = exif.get(34853)
+        if gps_info:
+            def _to_deg(v):
+                d, m, s = v
+                return float(d) + float(m)/60.0 + float(s)/3600.0
+            
+            lat_ref = gps_info.get(1)
+            lat_val = gps_info.get(2)
+            lon_ref = gps_info.get(3)
+            lon_val = gps_info.get(4)
+            
+            if lat_val and lat_ref and lon_val and lon_ref:
+                lat = _to_deg(lat_val)
+                if lat_ref != 'N': lat = -lat
+                lon = _to_deg(lon_val)
+                if lon_ref != 'E': lon = -lon
     except: pass
 
-    return {"width": w, "height": h, "thumbnail_path": tpath, "media_metadata": meta, "taken_at": taken_at}
+    return {
+        "width": w, "height": h, "thumbnail_path": tpath, 
+        "media_metadata": meta, "taken_at": taken_at,
+        "latitude": lat, "longitude": lon
+    }
 
 
 # ── Sync video processing ──────────────────────────────────────────────────────
@@ -164,16 +280,10 @@ def _document_sync(file_path: str, thumb_dir: str) -> dict:
     if mime_type == "application/pdf":
         try:
             # If it's a document, it might be encrypted. We need to decrypt it to a temp file for pdf2image.
-            with open(file_path, "rb") as f:
-                data = decrypt_file(f.read())
-            
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(data)
-                tmp_path = tmp.name
-            
+            # DEPRECATED: Files are now processed as plain and encrypted after.
+            # Keep as plain read for now.
             from pdf2image import convert_from_path
-            pages = convert_from_path(tmp_path, first_page=1, last_page=1, size=THUMB_SIZE[0])
-            Path(tmp_path).unlink(missing_ok=True)
+            pages = convert_from_path(file_path, first_page=1, last_page=1, size=THUMB_SIZE[0])
             
             if pages:
                 pages[0].save(str(tpath), "JPEG")

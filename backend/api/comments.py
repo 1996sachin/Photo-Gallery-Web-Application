@@ -1,14 +1,14 @@
 """Comments API"""
 import uuid
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
-from models.database import get_db, Comment, User
+from models.database import get_db, Comment, User, Media
 from api.auth import get_verified_user as get_current_user
 from services.audit_service import log_action
 from services.security_service import sanitize_text
-from fastapi import APIRouter, Depends, HTTPException, Request
+from services.websocket_manager import manager
 
 router = APIRouter()
 
@@ -18,8 +18,23 @@ class CommentIn(BaseModel):
 
 @router.post("/")
 async def add(p: CommentIn, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
-    c = Comment(media_id=uuid.UUID(p.media_id), author_id=cu.id, body=sanitize_text(p.body))
+    media_uuid = uuid.UUID(p.media_id)
+    r = await db.execute(select(Media).where(Media.id == media_uuid))
+    media = r.scalar_one_or_none()
+    if not media: raise HTTPException(404)
+    
+    c = Comment(media_id=media_uuid, author_id=cu.id, body=sanitize_text(p.body))
     db.add(c); await db.flush()
+    
+    # Notify owner
+    if str(media.uploader_id) != str(cu.id):
+        await manager.send_personal_message({
+            "type": "new_comment",
+            "media_id": p.media_id,
+            "author": cu.display_name,
+            "text": c.body[:50] + ("..." if len(c.body) > 50 else "")
+        }, str(media.uploader_id))
+
     await log_action(db, "add_comment", cu.id, details={"media_id": p.media_id, "comment_id": str(c.id)}, ip_address=request.client.host if request else None)
     return {"id": str(c.id), "body": c.body, "author_id": str(c.author_id), "created_at": c.created_at.isoformat()}
 

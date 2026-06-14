@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Heart, Play, FileText } from 'lucide-react'
-import { api } from '../hooks/useAuth'
+import { Heart, Play, FileText, Share2 } from 'lucide-react'
+import { api, useAuthStore } from '../hooks/useAuth'
 import { useMediaStore } from '../stores/mediaStore'
 import toast from 'react-hot-toast'
 
-export default function MediaCard({ item }) {
+export default function MediaCard({ item, selected, onSelect, selectMode }) {
   const navigate = useNavigate()
+  const { token } = useAuthStore()
   const updateItem = useMediaStore(s => s.updateItem)
   const [hov, setHov] = useState(false)
   const [fav, setFav] = useState(item.is_favorite)
@@ -21,24 +22,39 @@ export default function MediaCard({ item }) {
     } catch { toast.error('Could not update') }
   }
 
-  const thumb = item.thumbnail_url || item.file_url
+  const handleClick = (e) => {
+    if (selectMode) {
+      onSelect(item.id)
+    } else {
+      navigate(`/media/${item.id}`)
+    }
+  }
+
+  const thumbBase = item.thumbnail_url || item.file_url
+  const isProxied = thumbBase?.startsWith('/') || (thumbBase && thumbBase.includes(window.location.host))
+  const thumb = (isProxied && token)
+    ? `${thumbBase}${thumbBase.includes('?') ? '&' : '?'}token=${token}`
+    : thumbBase
+
   const isDoc = item.media_type === 'document'
   const isVid = item.media_type === 'video'
 
   return (
     <div
-      onClick={() => navigate(`/media/${item.id}`)}
+      onClick={handleClick}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
         position: 'relative', cursor: 'pointer',
         borderRadius: 11, overflow: 'hidden',
         background: 'var(--c-parchment)',
-        boxShadow: hov ? 'var(--shadow-lg)' : 'var(--shadow-sm)',
-        transform: hov ? 'scale(1.025)' : 'scale(1)',
+        boxShadow: (hov || selected) ? 'var(--shadow-lg)' : 'var(--shadow-sm)',
+        transform: (hov || selected) ? 'scale(1.025)' : 'scale(1)',
         transition: 'transform 0.2s var(--ease), box-shadow 0.2s var(--ease)',
         marginBottom: '12px',
-        display: 'block'
+        display: 'block',
+        outline: selected ? '3px solid var(--c-gold)' : 'none',
+        outlineOffset: -3
       }}
     >
       <img
@@ -46,12 +62,30 @@ export default function MediaCard({ item }) {
         loading="lazy"
         style={{
           width: '100%', height: 'auto', display: 'block',
-          transform: hov ? 'scale(1.06)' : 'scale(1)',
+          transform: (hov || selected) ? 'scale(1.06)' : 'scale(1)',
           transition: 'transform 0.35s var(--ease)',
-          minHeight: isDoc ? '140px' : 'auto'
+          minHeight: isDoc ? '140px' : 'auto',
+          filter: selected ? 'brightness(0.7)' : 'none'
         }}
         onError={e => { e.target.style.opacity = '0' }}
       />
+
+      {/* Select Checkbox */}
+      {(selectMode || hov || selected) && (
+        <div 
+          onClick={(e) => { e.stopPropagation(); onSelect(item.id) }}
+          style={{
+            position: 'absolute', top: 7, left: 7, zIndex: 10,
+            width: 22, height: 22, borderRadius: 6,
+            background: selected ? 'var(--c-gold)' : 'rgba(44,30,15,0.4)',
+            border: `2px solid ${selected ? 'var(--c-gold)' : '#fff'}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.15s'
+          }}
+        >
+          {selected && <div style={{ width: 10, height: 6, borderLeft: '2px solid #fff', borderBottom: '2px solid #fff', transform: 'rotate(-45deg) translate(1px, -1px)' }} />}
+        </div>
+      )}
 
       {/* Video play icon */}
       {isVid && (
@@ -67,18 +101,19 @@ export default function MediaCard({ item }) {
       )}
 
       {/* Document icon overlay */}
-      {isDoc && (
+      {isDoc && !item.thumbnail_url && (
         <div style={{
           position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
           display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
           color: 'var(--c-brown)', opacity: 0.8, pointerEvents: 'none'
         }}>
           <FileText size={32} />
-          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.05em' }}>
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em' }}>
             {item.original_filename.split('.').pop().toUpperCase()}
           </span>
         </div>
       )}
+
 
       {/* Bottom gradient + info */}
       <div style={{
@@ -116,7 +151,17 @@ export default function MediaCard({ item }) {
       </button>
 
       {/* Badges */}
-      <div style={{ position: 'absolute', top: 7, left: 7, display: 'flex', gap: 4 }}>
+      <div style={{ position: 'absolute', top: 7, left: (selectMode || hov || selected) ? 36 : 7, display: 'flex', gap: 4, transition: 'left 0.2s' }}>
+        {!item.is_mine && (
+          <div style={{
+            background: 'var(--c-gold)', backdropFilter: 'blur(3px)',
+            borderRadius: 5, padding: '2px 6px',
+            fontSize: 10, color: '#fff', fontWeight: 700, letterSpacing: '0.04em',
+            display: 'flex', alignItems: 'center', gap: 3
+          }}>
+            <Share2 size={10} /> SHARED
+          </div>
+        )}
         {isVid && (
           <div style={{
             background: 'rgba(44,30,15,0.55)', backdropFilter: 'blur(3px)',

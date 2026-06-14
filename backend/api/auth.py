@@ -12,7 +12,7 @@ import pyotp
 import qrcode
 import io
 import base64
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request, Query
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
@@ -203,13 +203,36 @@ def issue_password_reset_otp(u: User):
     send_password_reset_email(u.email, code)
 
 
-async def get_current_user(token: str = Depends(oauth2), db: AsyncSession = Depends(get_db)) -> User:
-    exc = HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not validate credentials", headers={"WWW-Authenticate": "Bearer"})
+async def get_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         uid = payload.get("sub")
+        if not uid: return None
+        r = await db.execute(select(User).where(User.id == uuid.UUID(uid)))
+        return r.scalar_one_or_none()
+    except:
+        return None
+
+async def get_current_user(
+    token: Optional[str] = Query(None),
+    request: Request = None,
+    db: AsyncSession = Depends(get_db)
+) -> User:
+    actual_token = token
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        actual_token = auth_header.split(" ", 1)[1]
+    
+    exc = HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not validate credentials", headers={"WWW-Authenticate": "Bearer"})
+    if not actual_token:
+        raise exc
+
+    try:
+        payload = jwt.decode(actual_token, SECRET_KEY, algorithms=[ALGORITHM])
+        uid = payload.get("sub")
         if not uid: raise exc
     except JWTError: raise exc
+    
     r = await db.execute(select(User).where(User.id == uuid.UUID(uid)))
     u = r.scalar_one_or_none()
     if not u: raise exc

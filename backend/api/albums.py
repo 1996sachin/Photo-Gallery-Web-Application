@@ -6,9 +6,11 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from pydantic import BaseModel
-from models.database import get_db, Album, Media, User
+from models.database import AccessGrant, get_db, Album, Media, User
+from services.storage import get_file_data
+from services.sync_service import log_sync_event
 from api.auth import get_verified_user as get_current_user
 from services.audit_service import log_action
 from services.security_service import sanitize_text
@@ -18,6 +20,7 @@ router = APIRouter()
 class AlbumIn(BaseModel):
     title: str
     description: Optional[str] = None
+    parent_id: Optional[str] = None
 
 
 class ShareSettings(BaseModel):
@@ -40,12 +43,14 @@ def _is_share_expired(album: Album) -> bool:
     return expires_at <= now
 
 
-def _album_dict(a: Album) -> dict:
+def _album_dict(a: Album, cu: User = None) -> dict:
     return {
         "id": str(a.id),
         "title": a.title,
         "description": a.description,
+        "parent_id": str(a.parent_id) if a.parent_id else None,
         "is_shared": bool(a.is_shared),
+
         "share_token": a.share_token,
         "share_has_password": bool(a.share_password_hash),
         "share_expires_at": a.share_expires_at.isoformat() if a.share_expires_at else None,
@@ -60,8 +65,8 @@ def _public_media_dict(m: Media, base: str) -> dict:
         "original_filename": m.original_filename,
         "title": m.title,
         "caption": m.caption,
-        "thumbnail_url": f"{base}/uploads/thumbnails/{m.thumbnail_path.split('/')[-1]}" if m.thumbnail_path else None,
-        "file_url": f"{base}/api/albums/shared/media/{m.id}/file",
+        "thumbnail_url": f"{base}/api/media/shared/{m.share_token}/thumbnail" if m.thumbnail_path else None,
+        "file_url": f"{base}/api/media/shared/{m.share_token}/file",
         "width": m.width,
         "height": m.height,
         "duration_seconds": m.duration_seconds,
@@ -80,24 +85,64 @@ async def _get_accessible_shared_album(token: str, password: Optional[str], db: 
 
 @router.post("/")
 async def create(p: AlbumIn, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
-    a = Album(owner_id=cu.id, title=sanitize_text(p.title), description=sanitize_text(p.description))
+    parent_uuid = uuid.UUID(p.parent_id) if p.parent_id else None
+    a = Album(owner_id=cu.id, title=sanitize_text(p.title), description=sanitize_text(p.description), parent_id=parent_uuid)
     db.add(a); await db.flush()
+    await log_sync_event(db, cu.id, "created", album_id=a.id)
     await log_action(db, "create_album", cu.id, details={"album_id": str(a.id)}, ip_address=request.client.host if request else None)
-    return _album_dict(a)
+    return _album_dict(a, cu)
 
 @router.get("/")
-async def list_albums(db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
-    r = await db.execute(select(Album).where(Album.owner_id == cu.id).order_by(Album.created_at.desc()))
-    return [_album_dict(a) for a in r.scalars().all()]
+async def list_albums(
+    parent_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db), 
+    cu: User = Depends(get_current_user)
+):
+    pid = uuid.UUID(parent_id) if parent_id else None
+    
+    if cu.role == "admin":
+        q = select(Album).where(Album.parent_id == pid)
+    else:
+        granted_album_ids = select(AccessGrant.album_id).where(AccessGrant.grantee_id == cu.id, AccessGrant.album_id.is_not(None))
+        q = select(Album).where(
+            or_(
+                Album.owner_id == cu.id, 
+                Album.id.in_(granted_album_ids)
+            ),
+            Album.parent_id == pid
+        )
+    
+    r = await db.execute(q.order_by(Album.created_at.desc()))
+    return [_album_dict(a, cu) for a in r.scalars().all()]
+
+@router.get("/{aid}")
+async def get_one(aid: str, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+    r = await db.execute(select(Album).where(Album.id == uuid.UUID(aid)))
+    a = r.scalar_one_or_none()
+    if not a: raise HTTPException(404)
+    # Check permissions (either owner or has access grant)
+    if a.owner_id != cu.id and cu.role != "admin":
+        granted = await db.execute(select(AccessGrant).where(AccessGrant.grantee_id == cu.id, AccessGrant.album_id == a.id))
+        if not granted.scalar_one_or_none():
+            raise HTTPException(403, "Access denied")
+    return _album_dict(a, cu)
 
 @router.delete("/{aid}")
 async def delete(aid: str, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
     r = await db.execute(select(Album).where(Album.id == uuid.UUID(aid), Album.owner_id == cu.id))
     a = r.scalar_one_or_none()
     if not a: raise HTTPException(404)
+    await log_sync_event(db, cu.id, "deleted", album_id=a.id)
     await db.delete(a)
     await log_action(db, "delete_album", cu.id, details={"album_id": aid}, ip_address=request.client.host if request else None)
     return {"status": "deleted"}
+
+@router.get("/shared-with-me")
+async def shared_with_me(db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+    granted_album_ids = select(AccessGrant.album_id).where(AccessGrant.grantee_id == cu.id, AccessGrant.album_id.is_not(None))
+    q = select(Album).where(Album.id.in_(granted_album_ids), Album.owner_id != cu.id)
+    r = await db.execute(q.order_by(Album.created_at.desc()))
+    return [_album_dict(a, cu) for a in r.scalars().all()]
 
 @router.post("/{aid}/share")
 async def share(aid: str, settings: ShareSettings = ShareSettings(), db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
@@ -128,7 +173,7 @@ async def share(aid: str, settings: ShareSettings = ShareSettings(), db: AsyncSe
         },
         ip_address=request.client.host if request else None,
     )
-    return _album_dict(a)
+    return _album_dict(a, cu)
 
 
 @router.get("/shared/{token}")
@@ -168,16 +213,20 @@ async def shared_media_file(
     if not media:
         raise HTTPException(404, "Media not found")
 
-    from pathlib import Path
-    import aiofiles
-    from fastapi.responses import Response
-    from services.media_processor import decrypt_file
+    from fastapi.responses import Response, RedirectResponse
+    from services.encryption_service import decrypt_data
+    from services.storage import get_presigned_url, USE_CDN
 
-    path = Path(media.file_path)
-    if not path.exists():
-        raise HTTPException(404, "File not found")
-    async with aiofiles.open(path, "rb") as f:
-        data = await f.read()
-    if media.media_type == "document":
-        data = decrypt_file(data)
-    return Response(content=data, media_type=media.mime_type)
+    if not media.is_encrypted and USE_CDN:
+        url = get_presigned_url(media.file_path)
+        if url:
+            return RedirectResponse(url)
+
+    data = get_file_data(media.file_path)
+    if media.is_encrypted:
+        data = decrypt_data(data, media.encryption_iv)
+    return Response(
+        content=data, 
+        media_type=media.mime_type,
+        headers={"Cache-Control": "public, max-age=86400"}
+    )

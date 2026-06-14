@@ -4,21 +4,25 @@ Run: uvicorn main:app --reload --port 8000
 """
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from services.limiter import limiter
 
-from models.database import create_tables
-from api.auth import router as auth_router
+from models.database import create_tables, get_db, AsyncSessionLocal
+from api.auth import router as auth_router, get_user_from_token
 from api.media import router as media_router
 from api.albums import router as albums_router
 from api.comments import router as comments_router
 from api.people import router as people_router
 from api.edits import router as edits_router
 from api.admin import router as admin_router
+from api.access import router as access_router
+from api.activity import router as activity_router
+from api.sync import router as sync_router
+from services.websocket_manager import manager
 
 
 @asynccontextmanager
@@ -26,6 +30,8 @@ async def lifespan(app: FastAPI):
     for d in ["uploads/originals", "uploads/thumbnails", "uploads/edited", "uploads/avatars"]:
         os.makedirs(d, exist_ok=True)
     await create_tables()
+    from services.storage import ensure_bucket
+    ensure_bucket()
     yield
 
 
@@ -58,6 +64,25 @@ app.include_router(comments_router, prefix="/api/comments", tags=["comments"])
 app.include_router(people_router,   prefix="/api/people",   tags=["people"])
 app.include_router(edits_router,    prefix="/api/edits",    tags=["edits"])
 app.include_router(admin_router,    prefix="/api/admin",    tags=["admin"])
+app.include_router(access_router,   prefix="/api/access",   tags=["access"])
+app.include_router(activity_router, prefix="/api/activity", tags=["activity"])
+app.include_router(sync_router,     prefix="/api/sync",     tags=["sync"])
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    async with AsyncSessionLocal() as db:
+        user = await get_user_from_token(token, db)
+    
+    if not user:
+        await websocket.close(code=1008)
+        return
+    
+    await manager.connect(str(user.id), websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(str(user.id), websocket)
 
 @app.get("/api/health")
 async def health(): return {"status": "ok"}
