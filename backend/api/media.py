@@ -25,10 +25,17 @@ ALLOWED_DOCS  = {"application/pdf", "text/plain", "application/msword", "applica
 MAX_SIZE = 500 * 1024 * 1024
 
 
-def to_dict(m: Media):
-    file_url = f"/api/media/{m.id}/file"
-    # For thumbnails, we'll also proxy them through the backend
-    thumbnail_url = f"/api/media/{m.id}/thumbnail" if m.thumbnail_path else None
+def _api_url(request: Optional[Request], path: str) -> str:
+    if not request:
+        return path
+    return f"{str(request.base_url).rstrip('/')}{path}"
+
+
+def to_dict(m: Media, cu: User = None, request: Optional[Request] = None):
+    file_url = _api_url(request, f"/api/media/{m.id}/file")
+    # For thumbnails, proxy them through the backend so private files still work
+    # from plain browser image/video requests with a token query string.
+    thumbnail_url = _api_url(request, f"/api/media/{m.id}/thumbnail") if m.thumbnail_path else None
     
     return {
         "id": str(m.id), "media_type": m.media_type,
@@ -54,6 +61,7 @@ def to_dict(m: Media):
         "malware_scan_status": m.malware_scan_status,
         "tags": m.tags,
         "media_metadata": m.media_metadata,
+        "is_mine": m.uploader_id == cu.id if cu else False,
     }
 
 
@@ -242,6 +250,7 @@ async def list_media(
     per_page: int = Query(30, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     cu: User = Depends(get_current_user),
+    request: Request = None,
 ):
     if cu.role == "admin":
         q = select(Media)
@@ -272,13 +281,14 @@ async def list_media(
     q = q.order_by(Media.taken_at.desc().nullslast(), Media.created_at.desc())
     q = q.offset((page - 1) * per_page).limit(per_page)
     r = await db.execute(q)
-    return [to_dict(m) for m in r.scalars().all()]
+    return [to_dict(m, cu, request) for m in r.scalars().all()]
 
 
 @router.get("/shared-with-me")
 async def shared_with_me(
     db: AsyncSession = Depends(get_db),
     cu: User = Depends(get_current_user),
+    request: Request = None,
 ):
     # Only items shared via AccessGrant, excluding items owned by current user
     granted_media = select(AccessGrant.media_id).where(AccessGrant.grantee_id == cu.id, AccessGrant.media_id.is_not(None))
@@ -289,16 +299,16 @@ async def shared_with_me(
     ).order_by(Media.created_at.desc())
     
     r = await db.execute(q)
-    return [to_dict(m) for m in r.scalars().all()]
+    return [to_dict(m, cu, request) for m in r.scalars().all()]
 
 
 @router.get("/{mid}")
-async def get_one(mid: str, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+async def get_one(mid: str, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
     r = await db.execute(select(Media).where(Media.id == uuid.UUID(mid)))
     m = r.scalar_one_or_none()
     if not m or not await _can_access_media(db, m, cu): raise HTTPException(404, "Not found")
     await db.execute(update(Media).where(Media.id == m.id).values(view_count=Media.view_count + 1))
-    return to_dict(m)
+    return to_dict(m, cu, request)
 
 
 @router.post("/{mid}/share")
@@ -322,13 +332,14 @@ async def share_media(mid: str, payload: dict, db: AsyncSession = Depends(get_db
         expires_at = payload.get("expires_at")
         m.share_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) if expires_at else None
     await log_action(db, "update_media_share", cu.id, details={"media_id": mid, "enabled": m.privacy == "shared"}, ip_address=request.client.host if request else None)
-    return to_dict(m)
+    return to_dict(m, cu, request)
 
 
 @router.get("/shared/{token}")
 async def get_shared_media(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), request: Request = None):
     m = await _get_shared_media(token, password, db)
-    base = str(request.base_url).rstrip("/") if request else "http://localhost:8000"
+    app_url = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
+    base = str(request.base_url).rstrip("/") if request else app_url
     return _public_media_dict(m, base)
 
 
@@ -458,13 +469,13 @@ async def batch_move(payload: dict, db: AsyncSession = Depends(get_db), cu: User
 
 
 @router.get("/trash/list")
-async def list_trash(db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user)):
+async def list_trash(db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
     r = await db.execute(
         select(Media)
         .where(Media.uploader_id == cu.id, Media.deleted_at.is_not(None))
         .order_by(Media.deleted_at.desc())
     )
-    return [to_dict(m) for m in r.scalars().all()]
+    return [to_dict(m, cu, request) for m in r.scalars().all()]
 
 
 

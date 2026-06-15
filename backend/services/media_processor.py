@@ -171,6 +171,7 @@ async def process_document(media_id: str, object_key: str, thumb_dir: str):
 # ── Sync photo processing ──────────────────────────────────────────────────────
 
 def _photo_sync(file_path: str, thumb_dir: str) -> dict:
+    Path(thumb_dir).mkdir(parents=True, exist_ok=True)
     img = Image.open(file_path)
     img = ImageOps.exif_transpose(img)   # auto-rotate from EXIF
     w, h = img.size
@@ -223,6 +224,7 @@ def _photo_sync(file_path: str, thumb_dir: str) -> dict:
 # ── Sync video processing ──────────────────────────────────────────────────────
 
 def _video_sync(file_path: str, thumb_dir: str) -> dict:
+    Path(thumb_dir).mkdir(parents=True, exist_ok=True)
     playable_path = _make_playable_video(file_path)
     probe = ffmpeg.probe(playable_path)
     vs = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
@@ -272,6 +274,7 @@ def _make_playable_video(file_path: str) -> str:
 # ── Sync document processing ───────────────────────────────────────────────────
 
 def _document_sync(file_path: str, thumb_dir: str) -> dict:
+    Path(thumb_dir).mkdir(parents=True, exist_ok=True)
     source = Path(file_path)
     mime_type = mimetypes.guess_type(file_path)[0] or ""
     tname = f"thumb_{source.stem}.jpg"

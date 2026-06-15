@@ -1,5 +1,6 @@
 """Albums API"""
 import hashlib
+import os
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -50,6 +51,7 @@ def _album_dict(a: Album, cu: User = None) -> dict:
         "description": a.description,
         "parent_id": str(a.parent_id) if a.parent_id else None,
         "is_shared": bool(a.is_shared),
+        "is_mine": a.owner_id == cu.id if cu else False,
 
         "share_token": a.share_token,
         "share_has_password": bool(a.share_password_hash),
@@ -98,7 +100,12 @@ async def list_albums(
     db: AsyncSession = Depends(get_db), 
     cu: User = Depends(get_current_user)
 ):
-    pid = uuid.UUID(parent_id) if parent_id else None
+    pid = None
+    if parent_id and parent_id not in ("null", "undefined", ""):
+        try:
+            pid = uuid.UUID(parent_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid parent_id format")
     
     if cu.role == "admin":
         q = select(Album).where(Album.parent_id == pid)
@@ -187,7 +194,8 @@ async def shared_album(
     media_result = await db.execute(
         select(Media).where(Media.album_id == album.id).order_by(Media.created_at.desc())
     )
-    base = str(request.base_url).rstrip("/") if request else "http://localhost:8000"
+    app_url = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
+    base = str(request.base_url).rstrip("/") if request else app_url
     return {
         "album": {
             "id": str(album.id),

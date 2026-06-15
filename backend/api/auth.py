@@ -12,7 +12,7 @@ import pyotp
 import qrcode
 import io
 import base64
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request, Query, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
@@ -30,6 +30,9 @@ router = APIRouter()
 SECRET_KEY = os.getenv("SECRET_KEY", "change-in-production")
 ALGORITHM  = "HS256"
 EXPIRE_MIN = 60 * 24 * 7
+AUTH_COOKIE_NAME = "memories_access_token"
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "False").lower() == "true"
+COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")
 AVATAR_DIR = Path("uploads/avatars")
 ALLOWED_AVATAR = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 APP_URL = os.getenv("APP_URL", "http://localhost:8000")
@@ -103,6 +106,22 @@ class PasswordResetConfirm(BaseModel):
 
 def make_token(sub: str) -> str:
     return jwt.encode({"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=EXPIRE_MIN)}, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def set_auth_cookie(response: Response, token: str):
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=EXPIRE_MIN * 60,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path="/",
+    )
+
+
+def clear_auth_cookie(response: Response):
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/", samesite=COOKIE_SAMESITE, secure=COOKIE_SECURE)
 
 
 def make_mfa_token(sub: str) -> str:
@@ -218,10 +237,14 @@ async def get_current_user(
     request: Request = None,
     db: AsyncSession = Depends(get_db)
 ) -> User:
-    actual_token = token
+    actual_token = None
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.lower().startswith("bearer "):
         actual_token = auth_header.split(" ", 1)[1]
+    if not actual_token:
+        actual_token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not actual_token:
+        actual_token = token
     
     exc = HTTPException(status.HTTP_401_UNAUTHORIZED, "Could not validate credentials", headers={"WWW-Authenticate": "Bearer"})
     if not actual_token:
@@ -322,7 +345,7 @@ async def mfa_disable(payload: MfaVerify, db: AsyncSession = Depends(get_db), cu
 
 
 @router.post("/mfa/verify", response_model=Token)
-async def mfa_verify(payload: MfaVerify, db: AsyncSession = Depends(get_db), request: Request = None):
+async def mfa_verify(payload: MfaVerify, db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
     if not payload.mfa_token:
         raise HTTPException(400, "MFA token is required")
     
@@ -344,12 +367,14 @@ async def mfa_verify(payload: MfaVerify, db: AsyncSession = Depends(get_db), req
         raise HTTPException(401, "Invalid MFA code")
     
     await log_action(db, "login_success_mfa", u.id, ip_address=request.client.host if request else None)
-    return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
+    access_token = make_token(str(u.id))
+    set_auth_cookie(response, access_token)
+    return Token(access_token=access_token, token_type="bearer", user=_out(u))
 
 
 @router.post("/register", response_model=Token)
 @limiter.limit("5/minute")
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), request: Request = None):
+async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
     email = _normalize_email(payload.email)
     _require_gmail(email)
     r = await db.execute(select(User).where(User.email == email))
@@ -359,7 +384,9 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), requ
             raise HTTPException(400, "Email already registered. Sign in to continue.")
         if not existing.email_verified:
             issue_email_otp(existing)
-        return Token(access_token=make_token(str(existing.id)), token_type="bearer", user=_out(existing))
+        access_token = make_token(str(existing.id))
+        set_auth_cookie(response, access_token)
+        return Token(access_token=access_token, token_type="bearer", user=_out(existing))
     user_count = await db.scalar(select(func.count(User.id))) or 0
     u = User(
         email=email,
@@ -370,12 +397,14 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), requ
     db.add(u); await db.flush()
     await log_action(db, "register", u.id, ip_address=request.client.host if request else None)
     issue_email_otp(u)
-    return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
+    access_token = make_token(str(u.id))
+    set_auth_cookie(response, access_token)
+    return Token(access_token=access_token, token_type="bearer", user=_out(u))
 
 
 @router.post("/token", response_model=Token)
 @limiter.limit("5/minute")
-async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db), request: Request = None):
+async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
     r = await db.execute(select(User).where(User.email == _normalize_email(form.username)))
     u = r.scalar_one_or_none()
     if not u or not pwd.verify(form.password, u.password_hash):
@@ -390,7 +419,15 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = 
         )
     
     await log_action(db, "login_success", u.id, ip_address=request.client.host if request else None)
-    return Token(access_token=make_token(str(u.id)), token_type="bearer", user=_out(u))
+    access_token = make_token(str(u.id))
+    set_auth_cookie(response, access_token)
+    return Token(access_token=access_token, token_type="bearer", user=_out(u))
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    clear_auth_cookie(response)
+    return {"status": "logged_out"}
 
 
 @router.post("/forgot-password")

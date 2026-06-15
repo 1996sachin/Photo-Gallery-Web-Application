@@ -3,6 +3,7 @@ Memories App v2 — FastAPI Backend
 Run: uvicorn main:app --reload --port 8000
 """
 import os
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,11 +25,16 @@ from api.activity import router as activity_router
 from api.sync import router as sync_router
 from services.websocket_manager import manager
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Ensure all upload directories exist
     for d in ["uploads/originals", "uploads/thumbnails", "uploads/edited", "uploads/avatars"]:
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(os.path.join(os.getcwd(), d), exist_ok=True)
+    
     await create_tables()
     from services.storage import ensure_bucket
     ensure_bucket()
@@ -40,16 +46,15 @@ app = FastAPI(title="Memories API", version="2.0.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8000").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", 
-        "http://localhost:5174", 
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:3000"
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -69,11 +74,18 @@ app.include_router(activity_router, prefix="/api/activity", tags=["activity"])
 app.include_router(sync_router,     prefix="/api/sync",     tags=["sync"])
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+    token = token or websocket.cookies.get("memories_access_token")
+    logger.info("Incoming WebSocket connection attempt")
+    if not token:
+        logger.warning("WebSocket connection rejected: Missing token")
+        await websocket.close(code=1008)
+        return
     async with AsyncSessionLocal() as db:
         user = await get_user_from_token(token, db)
     
     if not user:
+        logger.warning("WebSocket connection rejected: Invalid token")
         await websocket.close(code=1008)
         return
     
@@ -83,12 +95,14 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(str(user.id), websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user.id}: {e}")
+        manager.disconnect(str(user.id), websocket)
 
 @app.get("/api/health")
 async def health(): return {"status": "ok"}
 
 from fastapi.responses import FileResponse
-import os
 
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
