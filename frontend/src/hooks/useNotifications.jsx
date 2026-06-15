@@ -3,14 +3,16 @@ import { useAuthStore } from './useAuth'
 import toast from 'react-hot-toast'
 
 export function useNotifications() {
-  const { token } = useAuthStore()
+  const { user } = useAuthStore()
 
   useEffect(() => {
-    if (!token) return
+    if (!user) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host
-    const ws = new WebSocket(`${protocol}//${host}/ws?token=${token}`)
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+    const apiHost = apiUrl.replace(/^https?:\/\//, '')
+    const host = window.location.hostname === 'localhost' ? apiHost : window.location.host
+    const ws = new WebSocket(`${protocol}//${host}/ws`)
 
     ws.onmessage = (event) => {
       try {
@@ -31,5 +33,5 @@ export function useNotifications() {
     ws.onerror = (err) => console.error('WebSocket Error', err)
     
     return () => ws.close()
-  }, [token])
+  }, [user])
 }

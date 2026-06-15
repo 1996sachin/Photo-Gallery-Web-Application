@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { Images, Film, LayoutGrid, Trash2, Heart, X, FileText, Folder } from 'lucide-react'
+import { Images, Film, LayoutGrid, Trash2, Heart, X, FileText, Folder, Grid3X3, Square } from 'lucide-react'
 import { useMediaStore } from '../stores/mediaStore'
 import MediaCard from '../components/MediaCard'
 import MoveToFolderModal from '../components/MoveToFolderModal'
@@ -11,6 +11,7 @@ export default function GalleryPage() {
   const { items, loading, hasMore, filters, fetch, setFilter, selection, toggleSelect, clearSelection, batchDelete, batchFavorite, batchMove } = useMediaStore()
   const [acting, setActing] = useState(false)
   const [moving, setMoving] = useState(false)
+  const [gridSize, setGridSize] = useState('medium') // 'small', 'medium', 'large'
 
   useEffect(() => { fetch(true) }, [])
 
@@ -50,6 +51,22 @@ export default function GalleryPage() {
     </button>
   )
 
+  const SizeToggle = ({ size, icon: Icon, label }) => (
+    <button
+      className="btn btn-icon"
+      style={{
+        width: 32, height: 32,
+        background: gridSize === size ? 'var(--c-parchment)' : 'transparent',
+        color: gridSize === size ? 'var(--c-gold)' : 'var(--c-brown-lt)',
+        borderColor: gridSize === size ? 'var(--c-gold-lt)' : 'transparent',
+      }}
+      onClick={() => setGridSize(size)}
+      title={`Show ${label} icons`}
+    >
+      <Icon size={16} />
+    </button>
+  )
+
   return (
     <div>
       {selection.length > 0 && (
@@ -82,11 +99,19 @@ export default function GalleryPage() {
           {search ? `"${search}"` : 'All Memories'}
           {items.length > 0 && <span style={{ fontFamily: 'var(--sans)', fontSize: 14, fontWeight: 400, color: 'var(--c-brown-lt)', marginLeft: 10 }}>{items.length} memories</span>}
         </h1>
-        <div style={{ display: 'flex', gap: 7 }}>
-          <FilterChip value="all"      label="All"       icon={LayoutGrid} />
-          <FilterChip value="photo"    label="Photos"    icon={Images} />
-          <FilterChip value="video"    label="Videos"    icon={Film} />
-          <FilterChip value="document" label="Documents" icon={FileText} />
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          <div style={{ display: 'flex', background: 'var(--c-surface2)', padding: 3, borderRadius: 10, border: '1px solid var(--c-border)' }}>
+            <SizeToggle size="small" icon={Grid3X3} label="small" />
+            <SizeToggle size="medium" icon={LayoutGrid} label="medium" />
+            <SizeToggle size="large" icon={Square} label="large" />
+          </div>
+          <div style={{ width: 1, height: 24, background: 'var(--c-border)' }} />
+          <div style={{ display: 'flex', gap: 7 }}>
+            <FilterChip value="all"      label="All"       icon={LayoutGrid} />
+            <FilterChip value="photo"    label="Photos"    icon={Images} />
+            <FilterChip value="video"    label="Videos"    icon={Film} />
+            <FilterChip value="document" label="Documents" icon={FileText} />
+          </div>
         </div>
       </div>
 
@@ -103,7 +128,7 @@ export default function GalleryPage() {
         </div>
       ) : (
         <>
-          <div className="media-grid">
+          <div className={`media-grid size-${gridSize}`}>
             {items.map(item => (
               <MediaCard 
                 key={item.id} 

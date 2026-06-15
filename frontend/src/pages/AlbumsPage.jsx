@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Plus, BookImage, Trash2, ArrowLeft, Upload, Share2, Calendar, Lock, X, Copy, Shield, ShieldCheck, Heart, Users } from 'lucide-react'
+import { Plus, BookImage, Trash2, ArrowLeft, Upload, Share2, Calendar, Lock, X, Copy, Shield, ShieldCheck, Heart, Users, Eye } from 'lucide-react'
 import { api } from '../hooks/useAuth'
 import MediaCard from '../components/MediaCard'
 import UploadModal from '../components/UploadModal'
@@ -9,6 +9,14 @@ import toast from 'react-hot-toast'
 
 const AlbumGridItem = ({ album, navigate, openShare, setManagingAccess, remove }) => (
   <div key={album.id} className="card" onClick={() => navigate(`/albums/${album.id}`)} style={{ padding: 18, transition: 'box-shadow 0.15s', cursor: 'pointer' }}>
+    <div style={{
+      width: 34, height: 34, borderRadius: 9,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'var(--c-parchment)', color: 'var(--c-gold)',
+      marginBottom: 12
+    }}>
+      <BookImage size={17} />
+    </div>
     <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 }}>
       <div style={{ fontFamily: 'var(--serif)', fontSize: 16, fontWeight: 500, flex: 1, lineHeight: 1.3 }}>{album.title}</div>
       <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
@@ -31,6 +39,9 @@ const AlbumGridItem = ({ album, navigate, openShare, setManagingAccess, remove }
     </div>
     {album.description && <p style={{ fontSize: 12.5, color: 'var(--c-brown-lt)', marginBottom: 8, lineHeight: 1.5 }}>{album.description}</p>}
     <div style={{ fontSize: 11.5, color: 'var(--c-brown-lt)', marginTop: 6 }}>{new Date(album.created_at).toLocaleDateString()}</div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginTop: 10, fontSize: 11.5, color: 'var(--c-brown-lt)' }}>
+      <Eye size={12} /> Open album
+    </div>
     {album.is_shared && (
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
         <div className="badge">Shared</div>

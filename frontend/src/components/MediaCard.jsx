@@ -1,16 +1,17 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Heart, Play, FileText, Share2 } from 'lucide-react'
-import { api, useAuthStore } from '../hooks/useAuth'
+import { Eye, Heart, Image as ImageIcon, Play, FileText, Share2 } from 'lucide-react'
+import { api } from '../hooks/useAuth'
 import { useMediaStore } from '../stores/mediaStore'
 import toast from 'react-hot-toast'
 
 export default function MediaCard({ item, selected, onSelect, selectMode }) {
   const navigate = useNavigate()
-  const { token } = useAuthStore()
   const updateItem = useMediaStore(s => s.updateItem)
   const [hov, setHov] = useState(false)
   const [fav, setFav] = useState(item.is_favorite)
+  const [imgFailed, setImgFailed] = useState(false)
+  const [usingFullImage, setUsingFullImage] = useState(false)
 
   const toggleFav = async e => {
     e.stopPropagation()
@@ -30,11 +31,10 @@ export default function MediaCard({ item, selected, onSelect, selectMode }) {
     }
   }
 
-  const thumbBase = item.thumbnail_url || item.file_url
-  const isProxied = thumbBase?.startsWith('/') || (thumbBase && thumbBase.includes(window.location.host))
-  const thumb = (isProxied && token)
-    ? `${thumbBase}${thumbBase.includes('?') ? '&' : '?'}token=${token}`
-    : thumbBase
+  const thumb = useMemo(
+    () => (usingFullImage || !item.thumbnail_url ? item.file_url : item.thumbnail_url) || '',
+    [item.thumbnail_url, item.file_url, usingFullImage]
+  )
 
   const isDoc = item.media_type === 'document'
   const isVid = item.media_type === 'video'
@@ -57,21 +57,44 @@ export default function MediaCard({ item, selected, onSelect, selectMode }) {
         outlineOffset: -3
       }}
     >
-      <img
-        src={thumb} alt={item.title || item.original_filename}
-        loading="lazy"
-        style={{
-          width: '100%', height: 'auto', display: 'block',
-          transform: (hov || selected) ? 'scale(1.06)' : 'scale(1)',
-          transition: 'transform 0.35s var(--ease)',
-          minHeight: isDoc ? '140px' : 'auto',
-          filter: selected ? 'brightness(0.7)' : 'none'
-        }}
-        onError={e => { e.target.style.opacity = '0' }}
-      />
+      <div style={{ position: 'relative', aspectRatio: '1 / 1', background: 'var(--c-parchment)' }}>
+        {!imgFailed ? (
+          <img
+            src={thumb}
+            alt={item.title || item.original_filename}
+            loading="lazy"
+            decoding="async"
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: 'block',
+              transform: (hov || selected) ? 'scale(1.06)' : 'scale(1)',
+              transition: 'transform 0.35s var(--ease)',
+              filter: selected ? 'brightness(0.7)' : 'none',
+              opacity: 1
+            }}
+            onError={() => {
+              if (item.thumbnail_url && !usingFullImage) {
+                setUsingFullImage(true)
+              } else {
+                setImgFailed(true)
+              }
+            }}
+          />
+        ) : (
+          <div style={{
+            width: '100%', height: '100%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'var(--c-brown-lt)', background: 'var(--c-parchment)'
+          }}>
+            <ImageIcon size={24} strokeWidth={1.6} />
+          </div>
+        )}
+      </div>
 
       {/* Select Checkbox */}
-      {(selectMode || hov || selected) && (
+      {onSelect && (selectMode || hov || selected) && (
         <div 
           onClick={(e) => { e.stopPropagation(); onSelect(item.id) }}
           style={{
@@ -121,6 +144,17 @@ export default function MediaCard({ item, selected, onSelect, selectMode }) {
         background: 'linear-gradient(to top, rgba(44,30,15,0.72) 0%, rgba(44,30,15,0.1) 45%, transparent 70%)',
         opacity: hov ? 1 : 0, transition: 'opacity 0.22s',
       }} />
+      {(hov || selected) && !selectMode && (
+        <div style={{
+          position: 'absolute', right: 7, bottom: 7, zIndex: 9,
+          width: 28, height: 28, borderRadius: '50%',
+          background: 'rgba(44,30,15,0.48)', color: '#fff',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          backdropFilter: 'blur(4px)', pointerEvents: 'none'
+        }}>
+          <Eye size={13} />
+        </div>
+      )}
       {hov && (
         <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '8px 10px' }}>
           <div style={{ fontSize: 11.5, color: 'rgba(253,248,240,0.92)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>

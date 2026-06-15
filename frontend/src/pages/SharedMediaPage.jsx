@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { Camera, Download, FileText, Lock, Play, Share2, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
+import { Camera, Download, FileText, Lock, ZoomIn, ZoomOut, Maximize, Minimize } from 'lucide-react'
 import axios from 'axios'
 
 const publicApi = axios.create({ baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000' })
@@ -13,12 +13,18 @@ export default function SharedMediaPage() {
   const [loading, setLoading] = useState(true)
   const [needsPassword, setNeedsPassword] = useState(false)
   const [error, setError] = useState('')
+  const viewerRef = useRef(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   // Zoom State
   const [zoom, setZoom] = useState(1)
   const zoomIn = () => setZoom(prev => Math.min(prev + 0.25, 3))
   const zoomOut = () => setZoom(prev => Math.max(prev - 0.25, 0.5))
   const resetZoom = () => setZoom(1)
+  const toggleFullscreen = async () => {
+    if (!document.fullscreenElement) await viewerRef.current?.requestFullscreen()
+    else await document.exitFullscreen()
+  }
 
   const params = useMemo(() => ({
     token,
@@ -47,6 +53,12 @@ export default function SharedMediaPage() {
   }
 
   useEffect(() => { load() }, [token, submittedPassword])
+
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === viewerRef.current)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
 
   function fileUrl() {
     if (!item?.file_url) return ''
@@ -103,10 +115,11 @@ export default function SharedMediaPage() {
       </header>
 
       <div style={{ maxWidth: 1000, margin: '0 auto' }}>
-        <div style={{
+        <div ref={viewerRef} style={{
             borderRadius: 16, overflow: zoom > 1 ? 'auto' : 'hidden',
             background: '#1a120a',
             position: 'relative',
+            isolation: 'isolate',
             ...(isVideo ? { aspectRatio: '16/9' } : { minHeight: 450 }),
             boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
         }}>
@@ -139,14 +152,21 @@ export default function SharedMediaPage() {
                 </div>
             )}
 
-            {/* Zoom Controls Overlay */}
-            {item.media_type === 'photo' && (
-              <div style={{ position: 'absolute', bottom: 20, right: 20, display: 'flex', gap: 8, zIndex: 10 }}>
-                <button className="btn btn-icon" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomOut} title="Zoom Out"><ZoomOut size={16} /></button>
-                <button className="btn" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', fontSize: 11, padding: '0 8px', height: 32, minWidth: 50, justifyContent: 'center' }} onClick={resetZoom} title="Reset Zoom">{Math.round(zoom * 100)}%</button>
-                <button className="btn btn-icon" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomIn} title="Zoom In"><ZoomIn size={16} /></button>
-              </div>
-            )}
+            <div style={{
+              position: 'absolute', top: 12, right: 12, display: 'flex', gap: 7, zIndex: 10,
+              padding: 5, borderRadius: 10, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(5px)'
+            }}>
+              {item.media_type === 'photo' && (
+                <>
+                  <button className="btn btn-icon" style={{ color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomOut} title="Zoom out" aria-label="Zoom out"><ZoomOut size={16} /></button>
+                  <button className="btn" style={{ color: '#fff', border: 'none', fontSize: 11, padding: '0 8px', height: 32, minWidth: 54, justifyContent: 'center' }} onClick={resetZoom} title="Reset zoom" aria-label="Reset zoom">{Math.round(zoom * 100)}%</button>
+                  <button className="btn btn-icon" style={{ color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomIn} title="Zoom in" aria-label="Zoom in"><ZoomIn size={16} /></button>
+                </>
+              )}
+              <button className="btn btn-icon" style={{ color: '#fff', border: 'none', width: 32, height: 32 }} onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+                {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+              </button>
+            </div>
         </div>
       </div>
     </div>

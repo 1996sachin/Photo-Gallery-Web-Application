@@ -2,12 +2,9 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import axios from 'axios'
 
-export const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000' })
-
-api.interceptors.request.use(cfg => {
-  const token = useAuthStore.getState().token
-  if (token) cfg.headers.Authorization = `Bearer ${token}`
-  return cfg
+export const api = axios.create({
+  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
+  withCredentials: true,
 })
 
 export const useAuthStore = create(
@@ -24,19 +21,19 @@ export const useAuthStore = create(
         if (data.mfa_required) {
           return { mfa_required: true, mfa_token: data.mfa_token }
         }
-        set({ token: data.access_token, user: data.user })
+        set({ token: 'cookie', user: data.user })
         return data.user
       },
 
       verifyMfa: async (code, mfa_token) => {
         const { data } = await api.post('/api/auth/mfa/verify', { code, mfa_token })
-        set({ token: data.access_token, user: data.user })
+        set({ token: 'cookie', user: data.user })
         return data.user
       },
 
       register: async (email, password, displayName) => {
         const { data } = await api.post('/api/auth/register', { email, password, display_name: displayName })
-        set({ token: data.access_token, user: data.user })
+        set({ token: 'cookie', user: data.user })
         return data.user
       },
 
@@ -53,9 +50,12 @@ export const useAuthStore = create(
         return data
       },
 
-      logout: () => set({ token: null, user: null }),
+      logout: async () => {
+        await api.post('/api/auth/logout').catch(() => {})
+        set({ token: null, user: null })
+      },
       setUser: (user) => set({ user }),
     }),
-    { name: 'memories-auth', partialize: s => ({ token: s.token, user: s.user }) }
+    { name: 'memories-auth', partialize: s => ({ user: s.user, token: s.user ? 'cookie' : null }) }
   )
 )

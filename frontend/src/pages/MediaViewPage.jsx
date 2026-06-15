@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Heart, Download, Pencil, Trash2, MessageCircle, Send, MapPin, Calendar, Eye, Share2, Shield, ShieldAlert, ShieldCheck, Lock, Tag, Info, Activity, RotateCcw, ZoomIn, ZoomOut, Maximize } from 'lucide-react'
+import { ArrowLeft, Heart, Download, Pencil, Trash2, MessageCircle, Send, MapPin, Calendar, Eye, Share2, Shield, ShieldAlert, ShieldCheck, Lock, Tag, Info, Activity, RotateCcw, ZoomIn, ZoomOut, Maximize, Minimize } from 'lucide-react'
 import { api, useAuthStore } from '../hooks/useAuth'
 import { useMediaStore } from '../stores/mediaStore'
 import { formatDistanceToNow } from 'date-fns'
@@ -13,7 +13,7 @@ import AccessControlModal from '../components/AccessControlModal'
 export default function MediaViewPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { user, token } = useAuthStore()
+  const { user } = useAuthStore()
   const removeItem = useMediaStore(s => s.removeItem)
   const [item, setItem] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -23,6 +23,8 @@ export default function MediaViewPage() {
   const [editing, setEditing] = useState(false)
   const [sharing, setSharing] = useState(false)
   const [managingAccess, setManagingAccess] = useState(false)
+  const viewerRef = useRef(null)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   
   // Tab State
   const [activeTab, setActiveTab] = useState('info')
@@ -34,15 +36,27 @@ export default function MediaViewPage() {
   const zoomIn = () => setZoom(prev => Math.min(prev + 0.25, 3))
   const zoomOut = () => setZoom(prev => Math.max(prev - 0.25, 0.5))
   const resetZoom = () => setZoom(1)
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) await viewerRef.current?.requestFullscreen()
+      else await document.exitFullscreen()
+    } catch {
+      toast.error('Fullscreen is not available')
+    }
+  }
 
   const getAuthUrl = (url) => {
     if (!url) return ''
-    const isProxied = url.startsWith('/') || url.includes(window.location.hostname)
-    if (!isProxied || !token) return url
-    return `${url}${url.includes('?') ? '&' : '?'}token=${token}`
+    return url
   }
 
   useEffect(() => { loadMedia(); loadComments(); loadActivity(); loadVersions() }, [id])
+
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === viewerRef.current)
+    document.addEventListener('fullscreenchange', onFullscreenChange)
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
+  }, [])
 
   const loadMedia = async () => {
     setLoading(true)
@@ -133,10 +147,11 @@ export default function MediaViewPage() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 24, alignItems: 'start' }}>
         {/* ── Media panel ── */}
         <div>
-          <div style={{
+          <div ref={viewerRef} style={{
             borderRadius: 16, overflow: zoom > 1 ? 'auto' : 'hidden',
             background: '#1a120a',
             position: 'relative',
+            isolation: 'isolate',
             ...(item.media_type === 'video' ? { aspectRatio: '16/9' } : { minHeight: 450 }),
           }}>
             {item.media_type === 'video' ? (
@@ -172,14 +187,21 @@ export default function MediaViewPage() {
               </div>
             )}
 
-            {/* Zoom Controls Overlay */}
-            {item.media_type === 'photo' && (
-              <div style={{ position: 'absolute', bottom: 20, right: 20, display: 'flex', gap: 8, zIndex: 10 }}>
-                <button className="btn btn-icon" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomOut} title="Zoom Out"><ZoomOut size={16} /></button>
-                <button className="btn" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', fontSize: 11, padding: '0 8px', height: 32, minWidth: 50, justifyContent: 'center' }} onClick={resetZoom} title="Reset Zoom">{Math.round(zoom * 100)}%</button>
-                <button className="btn btn-icon" style={{ background: 'rgba(0,0,0,0.6)', color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomIn} title="Zoom In"><ZoomIn size={16} /></button>
-              </div>
-            )}
+            <div style={{
+              position: 'absolute', top: 12, right: 12, display: 'flex', gap: 7, zIndex: 10,
+              padding: 5, borderRadius: 10, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(5px)'
+            }}>
+              {item.media_type === 'photo' && (
+                <>
+                  <button className="btn btn-icon" style={{ color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomOut} title="Zoom out" aria-label="Zoom out"><ZoomOut size={16} /></button>
+                  <button className="btn" style={{ color: '#fff', border: 'none', fontSize: 11, padding: '0 8px', height: 32, minWidth: 54, justifyContent: 'center' }} onClick={resetZoom} title="Reset zoom" aria-label="Reset zoom">{Math.round(zoom * 100)}%</button>
+                  <button className="btn btn-icon" style={{ color: '#fff', border: 'none', width: 32, height: 32 }} onClick={zoomIn} title="Zoom in" aria-label="Zoom in"><ZoomIn size={16} /></button>
+                </>
+              )}
+              <button className="btn btn-icon" style={{ color: '#fff', border: 'none', width: 32, height: 32 }} onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} aria-label={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+                {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+              </button>
+            </div>
           </div>
 
           {/* Actions */}
