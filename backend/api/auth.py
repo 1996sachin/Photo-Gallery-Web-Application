@@ -37,12 +37,12 @@ AVATAR_DIR = Path("uploads/avatars")
 ALLOWED_AVATAR = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 APP_URL = os.getenv("APP_URL", "http://localhost:8000")
 FRONTEND_URL = os.getenv("FRONTEND_URL", APP_URL)
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-SMTP_FROM = os.getenv("SMTP_FROM") or SMTP_USERNAME
-SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() != "false"
+SMTP_HOST = os.getenv("SMTP_HOST") or os.getenv("EMAIL_HOST") or "smtp.gmail.com"
+SMTP_PORT = int(os.getenv("SMTP_PORT") or os.getenv("EMAIL_PORT") or "587")
+SMTP_USERNAME = os.getenv("SMTP_USERNAME") or os.getenv("EMAIL_HOST_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD") or os.getenv("EMAIL_HOST_PASSWORD")
+SMTP_FROM = os.getenv("SMTP_FROM") or os.getenv("EMAIL_FROM") or SMTP_USERNAME
+SMTP_TLS = (os.getenv("SMTP_TLS") or os.getenv("EMAIL_USE_TLS") or "true").lower() != "false"
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", f"{APP_URL}/api/auth/google/callback")

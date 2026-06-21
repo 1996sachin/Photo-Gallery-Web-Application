@@ -6,10 +6,13 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
+from pathlib import Path
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
+# Load .env file using absolute path relative to this file
+dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=dotenv_path)
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/memoriesdb")
 
 engine = create_async_engine(DATABASE_URL, echo=False)
