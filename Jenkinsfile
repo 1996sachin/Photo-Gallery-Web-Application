@@ -28,10 +28,14 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                sh '''
-                    docker compose down
-                    docker compose up -d
-                '''
+                withCredentials([file(credentialsId: 'backend-env', variable: 'ENV_FILE')]) {
+                    sh '''
+                        cp "$ENV_FILE" backend/.env
+
+                        docker compose down || true
+                        docker compose up -d --build
+                    '''
+                }
             }
         }
 
@@ -52,11 +56,11 @@ pipeline {
 
     post {
         success {
-            echo "Deployment Successful"
+            echo 'Deployment Successful'
         }
 
         failure {
-            echo "Deployment Failed"
+            echo 'Deployment Failed'
         }
 
         always {
