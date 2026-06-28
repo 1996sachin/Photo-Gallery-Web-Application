@@ -171,11 +171,79 @@ def send_code_email(to_email: str, code: str, subject: str, purpose: str):
     msg["Subject"] = subject
     msg["From"] = SMTP_FROM
     msg["To"] = to_email
-    msg.set_content(
+
+    # Plain text fallback
+    text_content = (
         f"Enter this code in Memories to {purpose}:\n\n"
         f"{code}\n\n"
         "This code expires in 10 minutes."
     )
+    msg.set_content(text_content)
+
+    # Beautiful styled HTML template matching the Memories golden aesthetic
+    html_content = f"""\
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{subject}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; background-color: #fdf8f0; color: #4a2e10; -webkit-font-smoothing: antialiased;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #fdf8f0; padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 480px; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 8px 30px rgba(74, 46, 16, 0.08); border: 1px solid rgba(200, 150, 60, 0.15);">
+          <!-- Header -->
+          <tr>
+            <td align="center" style="background: linear-gradient(135deg, #c8963c, #8a5e1a); padding: 32px 20px;">
+              <h1 style="margin: 0; font-family: Georgia, serif; font-size: 28px; font-weight: 600; color: #ffffff; letter-spacing: 0.5px;">Memories</h1>
+              <p style="margin: 6px 0 0 0; font-size: 13px; color: rgba(255, 255, 255, 0.85); font-style: italic;">A private gallery for the ones you love</p>
+            </td>
+          </tr>
+          
+          <!-- Content -->
+          <tr>
+            <td style="padding: 40px 32px 32px 32px; text-align: center;">
+              <h2 style="margin: 0 0 16px 0; font-family: Georgia, serif; font-size: 20px; font-weight: 500; color: #4a2e10;">Verification Code</h2>
+              <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.6; color: #725a41;">
+                Please use the code below to {purpose} in your Memories account:
+              </p>
+              
+              <!-- OTP Card -->
+              <table border="0" cellpadding="0" cellspacing="0" align="center" style="margin-bottom: 28px;">
+                <tr>
+                  <td align="center" style="background-color: #faf6f0; border: 1px dashed #c8963c; border-radius: 12px; padding: 18px 36px;">
+                    <span style="font-family: 'Courier New', Courier, monospace; font-size: 36px; font-weight: 700; color: #8a5e1a; letter-spacing: 6px; margin-right: -6px;">{code}</span>
+                  </td>
+                </tr>
+              </table>
+              
+              <p style="margin: 0 0 8px 0; font-size: 13.5px; line-height: 1.5; color: #9c8065;">
+                This code is valid for <strong>10 minutes</strong>.
+              </p>
+              <p style="margin: 0; font-size: 12.5px; line-height: 1.5; color: #c4b09e;">
+                If you did not request this, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+          
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="background-color: #faf6f0; padding: 24px 20px; border-top: 1px solid rgba(200, 150, 60, 0.08);">
+              <p style="margin: 0; font-size: 12px; color: #9c8065;">
+                ❤️ Your memories, stored privately
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+"""
+    msg.add_alternative(html_content, subtype="html")
 
     try:
         context = ssl.create_default_context()
