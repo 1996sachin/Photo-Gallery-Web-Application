@@ -6,36 +6,46 @@ pipeline {
     }
 
     stages {
-
         stage('Checkout') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Clean Workspace') {
             steps {
                 cleanWs()
                 checkout scm
             }
         }
 
-        stage('Docker Compose Build') {
+        stage('Copy Environment File') {
             steps {
-                sh 'docker compose build'
+                withCredentials([file(credentialsId: 'backend-env', variable: 'ENV_FILE')]) {
+                    sh '''
+                        cp "$ENV_FILE" backend/.env
+                    '''
+                }
+            }
+        }
+
+        stage('Clean Old Containers') {
+            steps {
+                sh '''
+                    docker compose down --remove-orphans || true
+
+                    docker rm -f photo-gallery-db || true
+                    docker rm -f photo-gallery-api || true
+                    docker rm -f photo-gallery-frontend || true
+
+                    docker network prune -f || true
+                '''
+            }
+        }
+
+        stage('Build Images') {
+            steps {
+                sh 'docker compose build --no-cache'
             }
         }
 
         stage('Deploy') {
             steps {
-                withCredentials([file(credentialsId: 'backend-env', variable: 'ENV_FILE')]) {
-                    sh '''
-                        cp "$ENV_FILE" backend/.env
-
-                        docker compose down || true
-                        docker compose up -d --build
-                    '''
-                }
+                sh 'docker compose up -d'
             }
         }
 
@@ -64,7 +74,10 @@ pipeline {
         }
 
         always {
-            sh 'docker ps'
+            sh '''
+                docker ps -a
+                docker compose logs --tail=50 || true
+            '''
         }
     }
 }
