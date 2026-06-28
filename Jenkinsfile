@@ -31,15 +31,30 @@ pipeline {
             }
         }
 
+        stage('Setup Python Environment') {
+            steps {
+                sh '''
+                    cd backend
+
+                    python3 -m venv venv
+
+                    . venv/bin/activate
+
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                    pip install flake8 pytest
+                '''
+            }
+        }
+
         stage('Backend Lint') {
             steps {
                 sh '''
                     cd backend
 
-                    if [ -f requirements.txt ]; then
-                        python3 -m pip install flake8
-                        flake8 . || true
-                    fi
+                    . venv/bin/activate
+
+                    flake8 . || true
                 '''
             }
         }
@@ -50,6 +65,7 @@ pipeline {
                     cd frontend
 
                     npm install
+
                     npm run lint || true
                 '''
             }
@@ -60,7 +76,8 @@ pipeline {
                 sh '''
                     cd backend
 
-                    python3 -m pip install pytest
+                    . venv/bin/activate
+
                     pytest || true
                 '''
             }
@@ -80,11 +97,9 @@ pipeline {
             steps {
                 sh '''
                     docker compose down --remove-orphans || true
-
                     docker rm -f photo-gallery-api || true
                     docker rm -f photo-gallery-frontend || true
                     docker rm -f photo-gallery-db || true
-
                     docker network prune -f || true
                 '''
             }
@@ -129,8 +144,7 @@ pipeline {
             steps {
                 sh '''
                     curl --fail http://localhost:8005/docs
-
-                    curl --fail http://localhost || true
+                    curl --fail http://localhost:3000 || true
                 '''
             }
         }
@@ -146,9 +160,7 @@ pipeline {
     }
 
     post {
-
         always {
-
             sh '''
                 echo "========== Running Containers =========="
                 docker ps -a
@@ -161,11 +173,11 @@ pipeline {
         }
 
         success {
-            echo "✅ Deployment Successful"
+            echo '✅ Deployment Successful'
         }
 
         failure {
-            echo "❌ Deployment Failed"
+            echo '❌ Deployment Failed'
         }
     }
 }
