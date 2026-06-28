@@ -9,9 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import or_, select
 from pydantic import BaseModel
-from models.database import AccessGrant, get_db, Album, Media, User
+from models.database import AccessGrant, get_db, Album, Media, User, Tenant
 from services.storage import get_file_data
 from services.sync_service import log_sync_event
+from services.tenant_service import get_current_tenant
 from api.auth import get_verified_user as get_current_user
 from services.audit_service import log_action
 from services.security_service import sanitize_text
@@ -76,11 +77,18 @@ def _public_media_dict(m: Media, base: str) -> dict:
     }
 
 
-async def _get_accessible_shared_album(token: str, password: Optional[str], db: AsyncSession) -> Album:
+async def _get_accessible_shared_album(token: str, password: Optional[str], db: AsyncSession, current_tenant: Optional[Tenant] = None) -> Album:
     r = await db.execute(select(Album).where(Album.share_token == token, Album.is_shared == True))
     album = r.scalar_one_or_none()
     if not album or _is_share_expired(album):
         raise HTTPException(404, "Shared album not found")
+        
+    # Enforce tenant boundary
+    if current_tenant and album.tenant_id != current_tenant.id:
+        raise HTTPException(404, "Shared album not found")
+    if not current_tenant and album.tenant_id is not None:
+        raise HTTPException(404, "Shared album not found")
+
     if album.share_password_hash and _hash_share_password(password or "") != album.share_password_hash:
         raise HTTPException(403, "Share password required")
     return album
@@ -88,7 +96,7 @@ async def _get_accessible_shared_album(token: str, password: Optional[str], db: 
 @router.post("/")
 async def create(p: AlbumIn, db: AsyncSession = Depends(get_db), cu: User = Depends(get_current_user), request: Request = None):
     parent_uuid = uuid.UUID(p.parent_id) if p.parent_id else None
-    a = Album(owner_id=cu.id, title=sanitize_text(p.title), description=sanitize_text(p.description), parent_id=parent_uuid)
+    a = Album(owner_id=cu.id, tenant_id=cu.tenant_id, title=sanitize_text(p.title), description=sanitize_text(p.description), parent_id=parent_uuid)
     db.add(a); await db.flush()
     await log_sync_event(db, cu.id, "created", album_id=a.id)
     await log_action(db, "create_album", cu.id, details={"album_id": str(a.id)}, ip_address=request.client.host if request else None)
@@ -189,8 +197,9 @@ async def shared_album(
     password: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
+    current_tenant: Optional[Tenant] = Depends(get_current_tenant),
 ):
-    album = await _get_accessible_shared_album(token, password, db)
+    album = await _get_accessible_shared_album(token, password, db, current_tenant)
     media_result = await db.execute(
         select(Media).where(Media.album_id == album.id).order_by(Media.created_at.desc())
     )
@@ -214,8 +223,9 @@ async def shared_media_file(
     token: str = Query(...),
     password: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
+    current_tenant: Optional[Tenant] = Depends(get_current_tenant),
 ):
-    album = await _get_accessible_shared_album(token, password, db)
+    album = await _get_accessible_shared_album(token, password, db, current_tenant)
     media_result = await db.execute(select(Media).where(Media.id == uuid.UUID(mid), Media.album_id == album.id))
     media = media_result.scalar_one_or_none()
     if not media:

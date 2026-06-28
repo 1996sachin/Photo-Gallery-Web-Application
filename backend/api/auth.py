@@ -20,10 +20,11 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
-from models.database import get_db, User
+from models.database import get_db, User, Tenant
 from services.audit_service import log_action
 from services.security_service import sanitize_text
 from services.limiter import limiter
+from services.tenant_service import get_current_tenant
 import os
 
 router = APIRouter()
@@ -162,7 +163,9 @@ def _is_expired(expires_at: datetime) -> bool:
 
 def send_code_email(to_email: str, code: str, subject: str, purpose: str):
     if not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM:
-        raise HTTPException(500, "SMTP is not configured")
+        print("WARNING: SMTP is not configured. Email not sent.")
+        print(f"EMAIL CONTENT: {purpose} code for {to_email} is {code}")
+        return
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -235,7 +238,8 @@ async def get_user_from_token(token: str, db: AsyncSession) -> Optional[User]:
 async def get_current_user(
     token: Optional[str] = Query(None),
     request: Request = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_tenant: Optional[Tenant] = Depends(get_current_tenant)
 ) -> User:
     actual_token = None
     auth_header = request.headers.get("Authorization")
@@ -259,6 +263,13 @@ async def get_current_user(
     r = await db.execute(select(User).where(User.id == uuid.UUID(uid)))
     u = r.scalar_one_or_none()
     if not u: raise exc
+    
+    # Enforce tenant isolation
+    if current_tenant and u.tenant_id != current_tenant.id:
+        raise HTTPException(403, "You do not have access to this tenant")
+    if not current_tenant and u.tenant_id is not None:
+        raise HTTPException(403, "Access restricted to tenant subdomain")
+        
     return u
 
 
@@ -374,12 +385,20 @@ async def mfa_verify(payload: MfaVerify, db: AsyncSession = Depends(get_db), req
 
 @router.post("/register", response_model=Token)
 @limiter.limit("5/minute")
-async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
+async def register(
+    payload: UserCreate, 
+    db: AsyncSession = Depends(get_db), 
+    request: Request = None, 
+    response: Response = None,
+    current_tenant: Optional[Tenant] = Depends(get_current_tenant)
+):
     email = _normalize_email(payload.email)
     _require_gmail(email)
     r = await db.execute(select(User).where(User.email == email))
     existing = r.scalar_one_or_none()
     if existing:
+        if current_tenant and existing.tenant_id != current_tenant.id:
+            raise HTTPException(400, "Email already registered on another tenant.")
         if not pwd.verify(payload.password, existing.password_hash):
             raise HTTPException(400, "Email already registered. Sign in to continue.")
         if not existing.email_verified:
@@ -393,6 +412,7 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), requ
         password_hash=pwd.hash(payload.password),
         display_name=payload.display_name,
         role="admin" if user_count == 0 else "client",
+        tenant_id=current_tenant.id if current_tenant else None,
     )
     db.add(u); await db.flush()
     await log_action(db, "register", u.id, ip_address=request.client.host if request else None)
@@ -404,9 +424,22 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db), requ
 
 @router.post("/token", response_model=Token)
 @limiter.limit("5/minute")
-async def login(form: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db), request: Request = None, response: Response = None):
+async def login(
+    form: OAuth2PasswordRequestForm = Depends(), 
+    db: AsyncSession = Depends(get_db), 
+    request: Request = None, 
+    response: Response = None,
+    current_tenant: Optional[Tenant] = Depends(get_current_tenant)
+):
     r = await db.execute(select(User).where(User.email == _normalize_email(form.username)))
     u = r.scalar_one_or_none()
+    
+    if u:
+        if current_tenant and u.tenant_id != current_tenant.id:
+            raise HTTPException(401, "Invalid credentials for this tenant")
+        if not current_tenant and u.tenant_id is not None:
+            raise HTTPException(401, "Please log in via your tenant subdomain")
+
     if not u or not pwd.verify(form.password, u.password_hash):
         if u: await log_action(db, "login_failed", u.id, ip_address=request.client.host if request else None)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
@@ -431,12 +464,20 @@ async def logout(response: Response):
 
 
 @router.post("/forgot-password")
-async def forgot_password(payload: PasswordResetRequest, db: AsyncSession = Depends(get_db)):
+async def forgot_password(
+    payload: PasswordResetRequest, 
+    db: AsyncSession = Depends(get_db),
+    current_tenant: Optional[Tenant] = Depends(get_current_tenant)
+):
     email = _normalize_email(payload.email)
     _require_gmail(email)
     r = await db.execute(select(User).where(User.email == email))
     u = r.scalar_one_or_none()
     if u:
+        if current_tenant and u.tenant_id != current_tenant.id:
+            return {"status": "requested", "message": "If this Gmail account exists, a reset code has been sent."}
+        if not current_tenant and u.tenant_id is not None:
+            return {"status": "requested", "message": "If this Gmail account exists, a reset code has been sent."}
         issue_password_reset_otp(u)
     return {"status": "requested", "message": "If this Gmail account exists, a reset code has been sent."}
 

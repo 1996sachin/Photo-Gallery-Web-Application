@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import or_, select, update
 import aiofiles
 
-from models.database import AccessGrant, get_db, Media, User, Album
+from models.database import AccessGrant, get_db, Media, User, Album, Tenant
 from api.auth import get_verified_user as get_current_user
+from services.tenant_service import get_current_tenant
 from services.storage import upload_file, get_file_data, delete_file, generate_object_key
 from services.media_processor import process_photo, process_video, process_document
 from services.audit_service import log_action
@@ -95,6 +96,8 @@ def _public_media_dict(m: Media, base: str) -> dict:
 
 
 async def _can_access_media(db: AsyncSession, media: Media, user: User) -> bool:
+    if media.tenant_id != user.tenant_id:
+        return False
     if media.uploader_id == user.id or user.role == "admin":
         return True
     conditions = [AccessGrant.media_id == media.id]
@@ -104,11 +107,18 @@ async def _can_access_media(db: AsyncSession, media: Media, user: User) -> bool:
     return grant.scalar_one_or_none() is not None
 
 
-async def _get_shared_media(token: str, password: Optional[str], db: AsyncSession) -> Media:
+async def _get_shared_media(token: str, password: Optional[str], db: AsyncSession, current_tenant: Optional[Tenant] = None) -> Media:
     r = await db.execute(select(Media).where(Media.share_token == token, Media.privacy == "shared"))
     media = r.scalar_one_or_none()
     if not media or _is_expired(media.share_expires_at):
         raise HTTPException(404, "Shared media not found")
+    
+    # Enforce tenant isolation
+    if current_tenant and media.tenant_id != current_tenant.id:
+        raise HTTPException(404, "Shared media not found")
+    if not current_tenant and media.tenant_id is not None:
+        raise HTTPException(404, "Shared media not found")
+
     if media.share_password_hash and _hash_share_password(password or "") != media.share_password_hash:
         raise HTTPException(403, "Share password required")
     return media
@@ -217,6 +227,7 @@ async def upload(
         media_type = "photo" if is_photo else ("video" if is_video else "document")
         m = Media(
             uploader_id=cu.id,
+            tenant_id=cu.tenant_id,
             album_id=album_uuid,
             filename=Path(object_key).name, original_filename=file.filename or local_name,
             file_path=object_key, media_type=media_type,
@@ -336,19 +347,19 @@ async def share_media(mid: str, payload: dict, db: AsyncSession = Depends(get_db
 
 
 @router.get("/shared/{token}")
-async def get_shared_media(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), request: Request = None):
-    m = await _get_shared_media(token, password, db)
+async def get_shared_media(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), request: Request = None, current_tenant: Optional[Tenant] = Depends(get_current_tenant)):
+    m = await _get_shared_media(token, password, db, current_tenant)
     app_url = os.getenv("APP_URL", "http://localhost:8000").rstrip("/")
     base = str(request.base_url).rstrip("/") if request else app_url
     return _public_media_dict(m, base)
 
 
 @router.get("/shared/{token}/file")
-async def get_shared_media_file(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db)):
+async def get_shared_media_file(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), current_tenant: Optional[Tenant] = Depends(get_current_tenant)):
     from fastapi.responses import Response
     from services.encryption_service import decrypt_data
 
-    m = await _get_shared_media(token, password, db)
+    m = await _get_shared_media(token, password, db, current_tenant)
     data = get_file_data(m.file_path)
     if m.is_encrypted:
         data = decrypt_data(data, m.encryption_iv)
@@ -360,9 +371,9 @@ async def get_shared_media_file(token: str, password: Optional[str] = Query(None
 
 
 @router.get("/shared/{token}/thumbnail")
-async def get_shared_media_thumbnail(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db)):
+async def get_shared_media_thumbnail(token: str, password: Optional[str] = Query(None), db: AsyncSession = Depends(get_db), current_tenant: Optional[Tenant] = Depends(get_current_tenant)):
     from fastapi.responses import Response
-    m = await _get_shared_media(token, password, db)
+    m = await _get_shared_media(token, password, db, current_tenant)
     if not m.thumbnail_path:
         raise HTTPException(404)
     data = get_file_data(m.thumbnail_path)

@@ -32,6 +32,9 @@ async def get_db():
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE SET NULL"))
+        await conn.execute(text("ALTER TABLE albums ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE"))
+        await conn.execute(text("ALTER TABLE media ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_requested_at TIMESTAMPTZ"))
         await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token TEXT"))
@@ -69,9 +72,20 @@ async def create_tables():
             )
 
 
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name          = Column(String(100), nullable=False)
+    slug          = Column(String(50), unique=True, nullable=False, index=True)
+    is_active     = Column(Boolean, default=True)
+    created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at    = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class User(Base):
     __tablename__ = "users"
     id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id     = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="SET NULL"))
     email         = Column(String(255), unique=True, nullable=False)
     password_hash = Column(Text, nullable=False)
     display_name  = Column(String(100), nullable=False)
@@ -89,6 +103,8 @@ class User(Base):
     password_reset_expires_at = Column(DateTime(timezone=True))
     created_at    = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at    = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    tenant        = relationship("Tenant")
     albums        = relationship("Album", back_populates="owner", foreign_keys="Album.owner_id")
     media         = relationship("Media", back_populates="uploader")
 
@@ -97,6 +113,7 @@ class Album(Base):
     __tablename__ = "albums"
     id             = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     owner_id       = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    tenant_id      = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"))
     parent_id      = Column(UUID(as_uuid=True), ForeignKey("albums.id", ondelete="CASCADE"))
     title          = Column(String(200), nullable=False)
     description    = Column(Text)
@@ -108,6 +125,7 @@ class Album(Base):
     created_at     = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at     = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     owner          = relationship("User", back_populates="albums", foreign_keys=[owner_id])
+    tenant         = relationship("Tenant")
     media          = relationship("Media", back_populates="album", foreign_keys="Media.album_id")
     children       = relationship("Album", cascade="all, delete-orphan", back_populates="parent")
     parent         = relationship("Album", back_populates="children", remote_side=[id])
@@ -121,6 +139,7 @@ class Media(Base):
     )
     id                = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     uploader_id       = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    tenant_id         = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"))
     album_id          = Column(UUID(as_uuid=True), ForeignKey("albums.id", ondelete="SET NULL"))
     filename          = Column(String(500), nullable=False)
     original_filename = Column(String(500), nullable=False)
@@ -154,6 +173,7 @@ class Media(Base):
     created_at        = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at        = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
     uploader  = relationship("User", back_populates="media")
+    tenant    = relationship("Tenant")
     album     = relationship("Album", back_populates="media", foreign_keys=[album_id])
     comments  = relationship("Comment", back_populates="media", cascade="all, delete")
     reactions = relationship("Reaction", back_populates="media", cascade="all, delete")

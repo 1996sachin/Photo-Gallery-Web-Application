@@ -3,7 +3,11 @@ import { useParams } from 'react-router-dom'
 import { Camera, Download, FileText, Lock, ZoomIn, ZoomOut, Maximize, Minimize } from 'lucide-react'
 import axios from 'axios'
 
-const publicApi = axios.create({ baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000' })
+const publicApi = axios.create({ 
+  baseURL: import.meta.env.DEV 
+    ? (import.meta.env.VITE_API_URL || 'http://localhost:8000') 
+    : window.location.origin 
+})
 
 export default function SharedMediaPage() {
   const { token } = useParams()

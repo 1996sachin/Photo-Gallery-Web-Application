@@ -20,10 +20,12 @@ from api.comments import router as comments_router
 from api.people import router as people_router
 from api.edits import router as edits_router
 from api.admin import router as admin_router
+from api.admin_tenants import router as admin_tenants_router
 from api.access import router as access_router
 from api.activity import router as activity_router
 from api.sync import router as sync_router
 from services.websocket_manager import manager
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +71,7 @@ app.include_router(comments_router, prefix="/api/comments", tags=["comments"])
 app.include_router(people_router,   prefix="/api/people",   tags=["people"])
 app.include_router(edits_router,    prefix="/api/edits",    tags=["edits"])
 app.include_router(admin_router,    prefix="/api/admin",    tags=["admin"])
+app.include_router(admin_tenants_router, prefix="/api/admin/tenants", tags=["admin_tenants"])
 app.include_router(access_router,   prefix="/api/access",   tags=["access"])
 app.include_router(activity_router, prefix="/api/activity", tags=["activity"])
 app.include_router(sync_router,     prefix="/api/sync",     tags=["sync"])
