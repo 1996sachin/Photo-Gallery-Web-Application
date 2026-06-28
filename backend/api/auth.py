@@ -162,6 +162,9 @@ def _is_expired(expires_at: datetime) -> bool:
 
 
 def send_code_email(to_email: str, code: str, subject: str, purpose: str):
+    # Always print code to terminal log for local development/testing
+    print(f"DEVELOPMENT OTP: {purpose} code for {to_email} is {code}")
+
     if not SMTP_USERNAME or not SMTP_PASSWORD or not SMTP_FROM:
         print("WARNING: SMTP is not configured. Email not sent.")
         print(f"EMAIL CONTENT: {purpose} code for {to_email} is {code}")
@@ -243,15 +246,23 @@ def send_code_email(to_email: str, code: str, subject: str, purpose: str):
 </body>
 </html>
 """
-    msg.add_alternative(html_content, subtype="html")
+    try:
+        msg.add_alternative(html_content, subtype="html")
+    except Exception as e:
+        print(f"FAILED TO ADD HTML ALTERNATIVE: {e}")
 
     try:
         context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-            if SMTP_TLS:
-                server.starttls(context=context)
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.send_message(msg)
+        if SMTP_PORT == 465:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=20) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                if SMTP_TLS:
+                    server.starttls(context=context)
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
     except Exception as e:
         print(f"FAILED TO SEND EMAIL: {e}")
         # In local dev, we don't want to crash the app just because email failed.
