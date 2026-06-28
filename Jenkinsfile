@@ -6,7 +6,8 @@ pipeline {
     }
 
     stages {
-        stage('Checkout') {
+
+        stage('Prepare Workspace') {
             steps {
                 cleanWs()
                 checkout scm
@@ -23,14 +24,14 @@ pipeline {
             }
         }
 
-        stage('Clean Old Containers') {
+        stage('Stop Old Containers') {
             steps {
                 sh '''
-                    docker compose down --remove-orphans || true
+                    docker compose down --remove-orphans --volumes || true
 
-                    docker rm -f photo-gallery-db || true
                     docker rm -f photo-gallery-api || true
                     docker rm -f photo-gallery-frontend || true
+                    docker rm -f photo-gallery-db || true
 
                     docker network prune -f || true
                 '''
@@ -65,19 +66,19 @@ pipeline {
     }
 
     post {
+        always {
+            sh '''
+                docker ps -a
+                docker compose logs --tail=50 || true
+            '''
+        }
+
         success {
             echo 'Deployment Successful'
         }
 
         failure {
             echo 'Deployment Failed'
-        }
-
-        always {
-            sh '''
-                docker ps -a
-                docker compose logs --tail=50 || true
-            '''
         }
     }
 }
