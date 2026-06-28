@@ -37,7 +37,7 @@ def get_subdomain(request: Request) -> str:
 
 async def get_current_tenant(request: Request, db: AsyncSession = Depends(get_db)) -> Tenant:
     subdomain = get_subdomain(request)
-    if not subdomain or subdomain in ("www", "admin"):
+    if not subdomain or subdomain in ("www", "admin", "memories", "api"):
         return None
     
     stmt = select(Tenant).where(Tenant.slug == subdomain, Tenant.is_active == True)
